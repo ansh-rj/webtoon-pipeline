@@ -91,5 +91,13 @@
   "end_card_variant": "default",
   "machine_profile": "auto",
   "parallel_workers": "auto",
-  "config_version": 8
+  "config_version": 8,
+  "capture": {
+    "viewport_width": 800,
+    "viewport_height": 1600,
+    "overlap_pct": 0.12,
+    "scroll_settle_ms": 400,
+    "image_load_timeout_ms": 15000,
+    "max_segments": 400
+  }
 }

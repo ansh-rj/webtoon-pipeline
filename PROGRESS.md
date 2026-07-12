@@ -3,19 +3,37 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01b — doctor.py: diagnostics half, environment verified end to end
+MS-01c — webtoon_capture.py: allow-list guard, auth, scroll, overlapping segment screenshots
 
 ## Last completed
-MS-01 — Environment tooling: PROGRESS.md, git repo, setup.py installer
+MS-01b — doctor.py: diagnostics half, environment verified end to end
 
 ## State
 DONE
 
 ## Files touched this session
-- doctor.py (new)
-- .claude/settings.local.json (permission allowlist additions, unrelated housekeeping)
+- webtoon_capture.py (new)
+- pipeline_config.json (added `capture` block: viewport_width 800, viewport_height 1600,
+  overlap_pct 0.12, scroll_settle_ms 400, image_load_timeout_ms 15000, max_segments 400 —
+  written automatically on first run if missing, same pattern as other stage configs)
 
-## What works (tested)
+## What works (tested this session)
+- Domain guard is hard-coded (`ALLOWED_DOMAINS = ["staging.local"]` at module top, not read from
+  pipeline_config.json, per explicit requirement). Tested for real: `python webtoon_capture.py
+  --creator_id=testc --series_id=tests --chapter_id=ch1 --url="https://google.com"` refused
+  cleanly with a plain-language message and exit code 1, before any browser/network activity.
+- `--dry-run` on an allow-listed staging.local URL prints the full plan (output dir, auth state
+  status, viewport/overlap/timeout settings, segment/time/disk estimates) and makes no changes —
+  confirmed no browser launched, no files written, exit code 0. Also confirmed this run
+  auto-added the missing `capture` block to pipeline_config.json (idempotent, same pattern as
+  machine_profile.json auto-creation in setup.py).
+- NOT tested this session (by design — dummy staging.local domain doesn't resolve on this dev
+  machine): manual-login flow (headful launch, storage_state save to auth_state.json), the
+  actual headless capture loop (scroll-and-screenshot with overlap, lazy-image wait, state
+  hash-skip on unchanged URL, max_segments safety cap), and the exception-handler path. The user
+  will run the real capture test against the live staging platform locally and report back.
+
+## What works (tested, prior sessions)
 - `python doctor.py --dry-run` prints the 15-check plan with per-check time estimates, makes no changes.
 - ffmpeg is now installed on this dev machine (via chocolatey, `ffmpeg version 8.1.2-essentials_build`,
   resolved at `C:\ProgramData\chocolatey\bin\ffmpeg.exe`). Confirmed on PATH and runnable.
@@ -67,7 +85,12 @@ DONE
   easyocr/torch (~9 min on this machine's connection).
 
 ## What is NOT done
-- extraction stage
+- webtoon_capture.py: segment STITCHING into full chapter images (explicitly deferred to next
+  session — this session stops at raw overlapping segment screenshots in
+  chapters/{creator_id}/{series_id}/{chapter_id}/segments/)
+- webtoon_capture.py: real-platform capture test (manual login, headless scroll capture) —
+  needs to be run by the user locally against the actual staging platform, not this dev machine
+- extraction stage (chapter image → text)
 - tts stage
 - script_generation stage
 - compilation stage
@@ -77,21 +100,35 @@ DONE
 - no API keys are in .env yet (blank placeholders only) — fine for free tier, required before
   any "paid" tier stage (script_provider claude / longform+compilation gemini / elevenlabs tts)
   can run
+- the tier "auto" → global tier → engine "auto" → tier_defaults resolver described in the open
+  questions below is still unbuilt; not needed yet since capture has no tier/engine (it's pure
+  browser automation), but extraction.py (next-next session) will need it
 
 ## Exact next step
-MS-02: build extraction.py (chapter image → text stage). Use state_manager.py's
-atomic_write_json/load_json/mark_unit for all state, read tier/engine from
-pipeline_config.json's `extraction` block (tier "auto" → resolve via tier_defaults[global tier]),
-resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine, implement the free path
-(easyocr, tesseract fallback) fully working with zero API keys since that's what's verified
-installed; stub the paid path (claude_vision / gemini_vision) behind the same interface so paid
-tier is wireable once a key is present in .env. Follow the same --dry-run / preflight / hash-skip
-/ heartbeat / exception-handler pattern as setup.py and doctor.py. extraction.py should call
+MS-01d: build the STITCHING step for webtoon_capture.py's output — merge the overlapping
+numbered segments in chapters/{creator_id}/{series_id}/{chapter_id}/segments/ into full
+deduplicated chapter image(s), using the known overlap_pct (from pipeline_config.json's
+`capture` block) to guide alignment (template matching / pixel-diff refinement for drift, since
+lazy-load timing can make actual overlap vary slightly from the nominal 12%). Decide + implement
+where stitched output lives (likely chapters/{creator_id}/{series_id}/{chapter_id}/stitched/) and
+whether segments/ is kept or cleaned up after a successful stitch. Follow the same --dry-run /
+preflight / hash-skip / heartbeat / exception-handler pattern. After stitching is solid, MS-02
+(deferred from this session) is: build extraction.py (chapter image → text stage) — read
+tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
+tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
+implement the free path (easyocr, tesseract fallback) fully working with zero API keys since
+that's what's verified installed; stub the paid path (claude_vision / gemini_vision) behind the
+same interface so paid tier is wireable once a key is present in .env. extraction.py should call
 doctor.py's checks (or import run_checks from doctor.py) as its own preflight gate rather than
 reimplementing dependency checks.
 
 ## Blockers
 (none — ffmpeg is now installed and doctor.py confirms a clean pass end to end)
+
+## Decisions made this session
+- `.gitignore` gained `auth_state.json` (holds live session cookies via Playwright storage_state
+  — must never be committed) and `chapters/*/` (captured/stitched chapter images are large binary
+  pipeline output, not source).
 
 ## Open questions
 - `pipeline_config.json`'s top-level `"mode"` field had no specified value in the setup spec;

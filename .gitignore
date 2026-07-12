@@ -5,3 +5,5 @@ __pycache__/
 logs/*.log
 jobs/*.json
 machine_profile.json
+auth_state.json
+chapters/*/
