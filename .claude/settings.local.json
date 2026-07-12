@@ -14,7 +14,11 @@
       "Bash(tasklist //FI \"IMAGENAME eq python.exe\" //V)",
       "Bash(\"/e/Claude/venv/Scripts/python.exe\" -m pip freeze)",
       "Bash(git -C /e/Claude status --short)",
-      "Bash(git -C /e/Claude add -A)"
+      "Bash(git -C /e/Claude add -A)",
+      "Bash(git commit -m ' *)",
+      "Bash(git -C /e/Claude diff --stat)",
+      "Bash(git -C /e/Claude diff .claude/settings.local.json)",
+      "Bash(git -C /e/Claude commit -m \"Update local Claude Code permission allowlist\")"
     ]
   }
 }
