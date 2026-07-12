@@ -6,7 +6,15 @@
       "Bash(where git *)",
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(git config *)",
+      "Bash(\"/c/Python314/python.exe\" setup.py --dry-run)",
+      "Bash(\"/c/Python314/python.exe\" setup.py --non-interactive)",
+      "Bash(tee setup_run.log)",
+      "Bash(tasklist //FI \"IMAGENAME eq python.exe\" //V)",
+      "Bash(\"/e/Claude/venv/Scripts/python.exe\" -m pip freeze)",
+      "Bash(git -C /e/Claude status --short)",
+      "Bash(git -C /e/Claude add -A)"
     ]
   }
 }

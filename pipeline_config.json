@@ -1,0 +1,95 @@
+{
+  "mode": "full",
+  "tier": "paid",
+  "tier_defaults": {
+    "free": {
+      "extraction_engine": "easyocr",
+      "tts_engine": "edge_tts",
+      "extraction_fallback": "tesseract",
+      "tts_fallback": "piper"
+    },
+    "paid": {
+      "extraction_engine": "claude_vision",
+      "tts_engine": "elevenlabs",
+      "extraction_fallback": "gemini_vision",
+      "tts_fallback": "openai_tts"
+    }
+  },
+  "extraction": {
+    "tier": "auto",
+    "engine": "auto"
+  },
+  "tts": {
+    "tier": "auto",
+    "engine": "auto"
+  },
+  "script_generation": {
+    "tier": "auto"
+  },
+  "compilation": {
+    "tier": "auto"
+  },
+  "digest": {
+    "tier": "auto"
+  },
+  "script_provider": "claude",
+  "longform_script_provider": "gemini",
+  "compilation_provider": "gemini",
+  "filler_tolerance": 0.1,
+  "compilation_mode": "budget",
+  "target_minutes": 90,
+  "chapter_range": null,
+  "recap_density": "balanced",
+  "narration_style": "dramatic",
+  "retention": {
+    "midroll_rehook_minutes": 12,
+    "open_loop_teasers": true,
+    "act_recap_lines": true
+  },
+  "audio": {
+    "music_enabled": true,
+    "music_folder": "assets/music/",
+    "music_duck_db": -14,
+    "loudness_target_lufs": -14,
+    "trim_silence_over_ms": 900
+  },
+  "motion": {
+    "ken_burns": true,
+    "max_zoom": 1.08
+  },
+  "split_into_parts": {
+    "enabled": false,
+    "max_part_minutes": 120
+  },
+  "generate_trailer_cut": true,
+  "trailer_cut_seconds": 90,
+  "thumbnail": {
+    "enabled": true,
+    "variants": 2
+  },
+  "render_quality": "final",
+  "fallback_enabled": true,
+  "cost_guard": {
+    "max_spend_usd": 25.0,
+    "warn_at_pct": 80,
+    "require_estimate_ack": true
+  },
+  "review_gates": {
+    "after_compilation_outline": true,
+    "after_full_script": true
+  },
+  "unattended": false,
+  "notifications": {
+    "desktop": true,
+    "webhook_url": null
+  },
+  "voices": {
+    "narrator": "Default Narrator",
+    "male": "Default Male",
+    "female": "Default Female"
+  },
+  "end_card_variant": "default",
+  "machine_profile": "auto",
+  "parallel_workers": "auto",
+  "config_version": 8
+}

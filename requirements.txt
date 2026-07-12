@@ -1,0 +1,12 @@
+playwright
+opencv-python
+pillow
+easyocr
+pytesseract
+edge-tts
+ffmpeg-python
+faster-whisper
+anthropic
+google-genai
+requests
+psutil
