@@ -18,7 +18,8 @@
       "Bash(git commit -m ' *)",
       "Bash(git -C /e/Claude diff --stat)",
       "Bash(git -C /e/Claude diff .claude/settings.local.json)",
-      "Bash(git -C /e/Claude commit -m \"Update local Claude Code permission allowlist\")"
+      "Bash(git -C /e/Claude commit -m \"Update local Claude Code permission allowlist\")",
+      "Bash(git -C /e/Claude commit -m \"MS-01: checkpoint PROGRESS.md with open questions for MS-02\")"
     ]
   }
 }

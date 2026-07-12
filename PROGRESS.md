@@ -71,3 +71,20 @@ tier is wireable once a key is present in .env. Follow the same --dry-run / pref
 ## Blockers
 - ffmpeg not installed on this dev machine — run `winget install ffmpeg` before testing any
   audio/video stage (extraction/OCR stages don't need it, so MS-02 is unblocked).
+
+## Open questions
+- `pipeline_config.json`'s top-level `"mode"` field had no specified value in the setup spec;
+  defaulted to `"full"` as a placeholder. Confirm this is the right default (vs. e.g. `"chapters"`
+  or null) before any stage starts reading it.
+- `voices.narrator/male/female` are placeholder friendly names ("Default Narrator", etc.), not
+  real engine voice IDs. MS-?? needs a friendly-name → engine-specific-voice-ID mapping table
+  (edge_tts / elevenlabs / openai_tts / piper each have different ID formats) before tts stage
+  can use them.
+- `winget install ffmpeg` is the Windows hint setup.py prints; unconfirmed whether the target
+  deployment machines actually have winget available (older Windows without App Installer would
+  not). May need a fallback hint or a bundled static ffmpeg binary option later.
+- No stage code exists yet to actually resolve `tier: "auto"` → global tier → engine "auto" →
+  `tier_defaults[resolved_tier].<engine>`. That resolution logic is currently only described in
+  prose (this file + the standing rules), not implemented anywhere. MS-02 should probably build
+  this resolver as a small shared helper (e.g. in state_manager.py or a new config.py) rather
+  than reimplementing it per-stage.
