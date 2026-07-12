@@ -1,0 +1,7 @@
+venv/
+.env
+__pycache__/
+*.pyc
+logs/*.log
+jobs/*.json
+machine_profile.json
