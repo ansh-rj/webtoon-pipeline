@@ -19,7 +19,24 @@
       "Bash(git -C /e/Claude diff --stat)",
       "Bash(git -C /e/Claude diff .claude/settings.local.json)",
       "Bash(git -C /e/Claude commit -m \"Update local Claude Code permission allowlist\")",
-      "Bash(git -C /e/Claude commit -m \"MS-01: checkpoint PROGRESS.md with open questions for MS-02\")"
+      "Bash(git -C /e/Claude commit -m \"MS-01: checkpoint PROGRESS.md with open questions for MS-02\")",
+      "Bash(git -C /e/Claude remote add origin https://github.com/ansh-rj/webtoon-pipeline.git)",
+      "Bash(git -C /e/Claude remote -v)",
+      "Bash(git -C /e/Claude branch -M main)",
+      "Bash(git -C /e/Claude branch)",
+      "Bash(git -C /e/Claude push -u origin main)",
+      "Bash(python -c \"import json; json.load\\(open\\('.claude/settings.local.json'\\)\\)\")",
+      "Bash(venv/Scripts/python.exe -m py_compile doctor.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('doctor.py',encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(venv/Scripts/python.exe doctor.py)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(python -c \"import json; d=json.load\\(open\\('jobs/doctor_state.json'\\)\\); print\\('doctor_state.json: VALID JSON,', len\\(d.get\\('units',{}\\)\\), 'units recorded'\\)\")",
+      "Bash(venv/Scripts/python.exe doctor.py --dry-run)",
+      "Bash(echo \"dry-run exit: $?\")",
+      "Read(//tmp/**)",
+      "Bash(venv/Scripts/python.exe doctor.py --json)",
+      "Bash(python -c \"import json,sys; json.loads\\(sys.stdin.read\\(\\)\\); print\\('--json output: VALID JSON'\\)\")",
+      "Bash(python -c \"import json; json.load\\(open\\('/tmp/json_out.txt'\\)\\); print\\('--json output: VALID JSON'\\)\")"
     ]
   }
 }
