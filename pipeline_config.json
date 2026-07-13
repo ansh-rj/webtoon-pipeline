@@ -93,8 +93,8 @@
   "parallel_workers": "auto",
   "config_version": 8,
   "capture": {
-    "viewport_width": 800,
-    "viewport_height": 1600,
+    "viewport_width": 1920,
+    "viewport_height": 1080,
     "overlap_pct": 0.12,
     "scroll_settle_ms": 400,
     "image_load_timeout_ms": 15000,
@@ -103,12 +103,5 @@
     "stitch_match_threshold": 0.5,
     "stitch_h_jitter": 20,
     "stitch_outlier_tol": 0.25
-  },
-  "stitch": {
-    "match_confidence_threshold": 0.5,
-    "template_height": 180,
-    "drift_margin_pct": 0.15,
-    "max_strip_height": 20000,
-    "cleanup_segments": false
   }
 }

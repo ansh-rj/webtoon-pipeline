@@ -3,7 +3,7 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01e — webtoon_capture.py: in-script `--stitch` mode (segments → strip.png), verified on REAL data
+MS-01f — resolved the two-stitcher redundancy: `--stitch` is canonical; webtoon_stitch.py deleted
 
 ## Last completed
 MS-01d — webtoon_stitch.py: overlap-detect + trim stitching of segments into seamless strip(s)
@@ -22,9 +22,13 @@ DONE
 - pipeline_config.json (MODIFIED, valid) — `capture` block gained 4 stitch knobs:
   stitch_slice_height 200, stitch_match_threshold 0.5, stitch_h_jitter 20, stitch_outlier_tol 0.25.
 - NOT committed yet by the interrupted run; committing this session.
-- REDUNDANCY (open decision): webtoon_stitch.py (MS-01d) and webtoon_capture.py --stitch now BOTH
-  stitch. Different output paths (stitched/strip_####.png vs strip.png). User asked for the in-capture
-  variant explicitly. Keep both, or delete webtoon_stitch.py? Awaiting user call — see open questions.
+- REDUNDANCY RESOLVED (MS-01f): user chose webtoon_capture.py --stitch as canonical.
+  webtoon_stitch.py DELETED (git rm). Its orphaned top-level `stitch` block removed from
+  pipeline_config.json. jobs/stitch_state.json never existed on disk. The `capture` block's
+  stitch_* knobs are the live tunables. Canonical stitched output = chapters/{ids}/strip.png.
+- Also fixed stale config: capture.viewport_width/height set to 1920x1080 to match what the
+  capturer actually produces (it hard-codes the browser to 1920x1080). No more drift-correction
+  note on stitch; nominal overlap now 129px straight from config.
 
 ## What works (tested this session — MS-01e, REAL captured chapter test/my_series/01, 46 segments)
 - 46 real 1920x1080 segments stitched into strip.png (1920x26707). Ran clean, reproducible.
@@ -50,7 +54,9 @@ DONE
 - Raw segments KEPT (per spec) for the user's own visual confirm; --cleanup-segments removes them.
 
 ## What works (tested prior session — MS-01d, synthetic data on this dev machine)
-- webtoon_stitch.py stitches chapters/{creator}/{series}/{chapter}/segments/segment_*.png into
+## NOTE: webtoon_stitch.py was DELETED in MS-01f. This section is retained as history of the
+## algorithm's validation; the same NCC/fallback approach lives on in webtoon_capture.py --stitch.
+- webtoon_stitch.py stitched chapters/{creator}/{series}/{chapter}/segments/segment_*.png into
   deduplicated chapters/.../stitched/strip_####.png. Alignment is per-pair template matching
   (cv2.matchTemplate TM_CCOEFF_NORMED): a `template_height`-row band from the top of segment N is
   located in segment N-1; overlap = prev_h - match_row; segment N contributes only rows below the
@@ -151,10 +157,8 @@ DONE
   easyocr/torch (~9 min on this machine's connection).
 
 ## What is NOT done
-- webtoon_stitch.py: real-platform verification (stitch actual captured segments end to end) —
-  only synthetic exact-crop data has been tested. Real screenshots may have sub-pixel/anti-alias
-  differences at seams; the confidence threshold + fallback exist for this but are unproven on
-  live captures. User should run capture→stitch on the live staging chapter and eyeball the strip.
+- stitch QUALITY on real data: the live 46-segment chapter stitches but is UNEVEN (user-reported).
+  Under investigation in MS-01g — root-cause is a capture/stitch overlap mismatch (see below).
 - webtoon_capture.py: real-platform capture test (manual login, headless scroll capture) —
   needs to be run by the user locally against the actual staging platform, not this dev machine
 - extraction stage (chapter image → text)
@@ -172,10 +176,8 @@ DONE
   browser automation), but extraction.py (next-next session) will need it
 
 ## Exact next step
-FIRST: user to resolve the webtoon_stitch.py vs webtoon_capture.py --stitch redundancy (open
-question below) — decide which stitcher is canonical before extraction.py consumes its output
-(the two write to DIFFERENT paths: stitched/strip_####.png vs strip.png, so extraction must know
-which to read). Then:
+Stitcher redundancy is RESOLVED (MS-01f): canonical stitched output is chapters/{ids}/strip.png
+from `webtoon_capture.py --stitch`. extraction.py reads that.
 MS-02: build extraction.py (chapter image → text stage) — read
 tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
@@ -197,18 +199,12 @@ reimplementing dependency checks.
 - Uniform/flat overlap regions get a variance guard (template std<3 → nominal fallback) on top of
   the confidence threshold, because NCC reports spurious high scores on textureless gutters.
 
-## Decisions made prior session (MS-01d)
-- Stitching is a SEPARATE stage script (webtoon_stitch.py), not folded into webtoon_capture.py —
-  each pipeline stage is its own script with its own state file (jobs/stitch_state.json).
-- Stitched output lives in chapters/{creator}/{series}/{chapter}/stitched/ as strip_####.png
-  (already covered by the `chapters/*/` gitignore). segments/ is KEPT by default after a
-  successful stitch (safer — allows re-stitch without re-capture); pass --cleanup-segments (or
-  set stitch.cleanup_segments true) to delete them.
-- Matcher searches the FULL plausible overlap range, not a narrow band around nominal overlap_pct.
-  This is required to catch the capturer's clamped final segment (arbitrary large overlap).
-  drift_margin_pct is therefore now vestigial (left in config for back-compat).
-- Very tall canvases split at stitch.max_strip_height (default 20000px) into multiple strips so
-  downstream OCR/vision stages get manageable images and no single PNG is unwieldy.
+## Decisions made prior session (MS-01d) — SUPERSEDED by MS-01f
+- webtoon_stitch.py was a separate stage script writing stitched/strip_####.png with multi-strip
+  splitting at max_strip_height. DELETED in MS-01f (user chose the in-capture --stitch variant).
+  Kept here only as history: the multi-strip-split idea (cap very tall canvases so downstream
+  OCR/vision gets manageable images) was NOT carried into --stitch, which writes one strip.png.
+  If a chapter's strip ever proves too tall for a downstream stage, re-introduce splitting there.
 
 ## Decisions made prior session (MS-01c)
 - `.gitignore` gained `auth_state.json` (holds live session cookies via Playwright storage_state
