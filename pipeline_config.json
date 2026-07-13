@@ -98,7 +98,11 @@
     "overlap_pct": 0.12,
     "scroll_settle_ms": 400,
     "image_load_timeout_ms": 15000,
-    "max_segments": 400
+    "max_segments": 400,
+    "stitch_slice_height": 200,
+    "stitch_match_threshold": 0.5,
+    "stitch_h_jitter": 20,
+    "stitch_outlier_tol": 0.25
   },
   "stitch": {
     "match_confidence_threshold": 0.5,

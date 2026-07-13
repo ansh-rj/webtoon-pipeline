@@ -3,20 +3,58 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01d — webtoon_stitch.py: overlap-detect + trim stitching of segments into seamless strip(s)
+MS-01e — webtoon_capture.py: in-script `--stitch` mode (segments → strip.png), verified on REAL data
 
 ## Last completed
-MS-01c — webtoon_capture.py: allow-list guard, auth, scroll, overlapping segment screenshots
+MS-01d — webtoon_stitch.py: overlap-detect + trim stitching of segments into seamless strip(s)
 
 ## State
 DONE
 
-## Files touched this session
-- webtoon_stitch.py (new)
-- pipeline_config.json (added `stitch` block: match_confidence_threshold 0.5, template_height 180,
-  drift_margin_pct 0.15, max_strip_height 20000, cleanup_segments false — auto-added on first run,
-  same idempotent pattern as `capture`. NB: drift_margin_pct is now unused — the matcher searches
-  the full plausible overlap range instead of a narrow band; kept in config for back-compat.)
+## Files touched this session (MS-01e) — real state audited after a mid-run interruption
+- webtoon_capture.py (MODIFIED, complete + compiles + runs) — added `--stitch` mode: stitches
+  existing segments/ into a single chapters/{ids}/strip.png (NOT the separate stitched/strip_####
+  layout of webtoon_stitch.py — this is the per-user-spec variant). Also added `--cleanup-segments`
+  and made `--url` optional (only required for capture, not stitch). New funcs: strip_path_for,
+  detect_seam_overlap, stitch_segments. preflight() now takes an optional check list (stitch skips
+  network/playwright). NOTE: the interrupted session left BOTH files fully written — audited this
+  session: valid JSON, compiles, end-to-end re-run reproduces identical strip. No repair needed.
+- pipeline_config.json (MODIFIED, valid) — `capture` block gained 4 stitch knobs:
+  stitch_slice_height 200, stitch_match_threshold 0.5, stitch_h_jitter 20, stitch_outlier_tol 0.25.
+- NOT committed yet by the interrupted run; committing this session.
+- REDUNDANCY (open decision): webtoon_stitch.py (MS-01d) and webtoon_capture.py --stitch now BOTH
+  stitch. Different output paths (stitched/strip_####.png vs strip.png). User asked for the in-capture
+  variant explicitly. Keep both, or delete webtoon_stitch.py? Awaiting user call — see open questions.
+
+## What works (tested this session — MS-01e, REAL captured chapter test/my_series/01, 46 segments)
+- 46 real 1920x1080 segments stitched into strip.png (1920x26707). Ran clean, reproducible.
+- CONFIG-DRIFT SELF-CORRECT: real segments are 1920x1080 but config viewport_height was 1600
+  (capturer hard-codes the browser to 1920x1080, overriding config). Nominal overlap is now derived
+  from the ACTUAL median segment height (1080*0.12=129px), not config, and prints a note when they
+  differ. This was a real bug found on live data — the config-derived nominal (192) was wrong.
+- Uniform-region ambiguity handled TWO ways: (a) match confidence < threshold → nominal fallback,
+  (b) low-variance template (std<3, a solid gutter) → nominal fallback (NCC goes degenerate on flat
+  regions and reports spurious high scores; caught on a synthetic pure-white overlap that otherwise
+  swallowed a whole segment). Verified both.
+- Per-seam table prints overlap_px, conf, h_shift, source, and strip_y (pixel position of each seam
+  in strip.png) so the user knows exactly where to scroll; FALLBACK/OUTLIER/hshift flagged. Outliers
+  flagged vs median overlap (stitch_outlier_tol).
+- VISUALLY INSPECTED the real strip myself (cropped ±120px around the riskiest seams and Read the
+  images): seam 1 (dark art, continuous), seam 18 & 28 (CONTAINED dup-flagged; speech-bubble text
+  flows across un-duplicated/un-clipped), seams 42-44 (the 3 FALLBACK seams) all land in the page
+  FOOTER/UI chrome (Trending & Popular, creator info — near-white, mean~250), not comic content.
+  No duplicated or missing slivers at any worst-case seam.
+- 3 fallback + 35/45 outlier seams: NOT stitch failures — the live capture had irregular scroll
+  distances (match conf mostly >0.85, two segments fully CONTAINED/duplicate). The stitcher adapts
+  per-seam; only the 3 fallbacks are guesses and they sit in harmless footer whitespace.
+- Raw segments KEPT (per spec) for the user's own visual confirm; --cleanup-segments removes them.
+
+## What works (tested prior session — MS-01d, synthetic data on this dev machine)
+- webtoon_stitch.py stitches chapters/{creator}/{series}/{chapter}/segments/segment_*.png into
+  deduplicated chapters/.../stitched/strip_####.png. Alignment is per-pair template matching
+  (cv2.matchTemplate TM_CCOEFF_NORMED): a `template_height`-row band from the top of segment N is
+  located in segment N-1; overlap = prev_h - match_row; segment N contributes only rows below the
+  overlap. Confidence < threshold falls back to nominal overlap_pct.
 
 ## What works (tested this session — MS-01d, synthetic data on this dev machine)
 - webtoon_stitch.py stitches chapters/{creator}/{series}/{chapter}/segments/segment_*.png into
@@ -134,6 +172,10 @@ DONE
   browser automation), but extraction.py (next-next session) will need it
 
 ## Exact next step
+FIRST: user to resolve the webtoon_stitch.py vs webtoon_capture.py --stitch redundancy (open
+question below) — decide which stitcher is canonical before extraction.py consumes its output
+(the two write to DIFFERENT paths: stitched/strip_####.png vs strip.png, so extraction must know
+which to read). Then:
 MS-02: build extraction.py (chapter image → text stage) — read
 tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
@@ -146,7 +188,16 @@ reimplementing dependency checks.
 ## Blockers
 (none — ffmpeg is now installed and doctor.py confirms a clean pass end to end)
 
-## Decisions made this session (MS-01d)
+## Decisions made this session (MS-01e)
+- Per explicit user spec, stitching was ALSO built into webtoon_capture.py as `--stitch` mode,
+  writing a single strip.png at chapters/{ids}/strip.png (no multi-strip split). This coexists
+  with (duplicates) webtoon_stitch.py from MS-01d. Redundancy flagged for user to resolve.
+- Nominal overlap derived from ACTUAL median segment height, not config viewport_height, so the
+  fallback is correct even when the capturer overrode the configured viewport (which it does).
+- Uniform/flat overlap regions get a variance guard (template std<3 → nominal fallback) on top of
+  the confidence threshold, because NCC reports spurious high scores on textureless gutters.
+
+## Decisions made prior session (MS-01d)
 - Stitching is a SEPARATE stage script (webtoon_stitch.py), not folded into webtoon_capture.py —
   each pipeline stage is its own script with its own state file (jobs/stitch_state.json).
 - Stitched output lives in chapters/{creator}/{series}/{chapter}/stitched/ as strip_####.png
