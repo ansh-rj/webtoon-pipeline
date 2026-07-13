@@ -3,21 +3,49 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01c — webtoon_capture.py: allow-list guard, auth, scroll, overlapping segment screenshots
+MS-01d — webtoon_stitch.py: overlap-detect + trim stitching of segments into seamless strip(s)
 
 ## Last completed
-MS-01b — doctor.py: diagnostics half, environment verified end to end
+MS-01c — webtoon_capture.py: allow-list guard, auth, scroll, overlapping segment screenshots
 
 ## State
 DONE
 
 ## Files touched this session
-- webtoon_capture.py (new)
-- pipeline_config.json (added `capture` block: viewport_width 800, viewport_height 1600,
-  overlap_pct 0.12, scroll_settle_ms 400, image_load_timeout_ms 15000, max_segments 400 —
-  written automatically on first run if missing, same pattern as other stage configs)
+- webtoon_stitch.py (new)
+- pipeline_config.json (added `stitch` block: match_confidence_threshold 0.5, template_height 180,
+  drift_margin_pct 0.15, max_strip_height 20000, cleanup_segments false — auto-added on first run,
+  same idempotent pattern as `capture`. NB: drift_margin_pct is now unused — the matcher searches
+  the full plausible overlap range instead of a narrow band; kept in config for back-compat.)
 
-## What works (tested this session)
+## What works (tested this session — MS-01d, synthetic data on this dev machine)
+- webtoon_stitch.py stitches chapters/{creator}/{series}/{chapter}/segments/segment_*.png into
+  deduplicated chapters/.../stitched/strip_####.png. Alignment is per-pair template matching
+  (cv2.matchTemplate TM_CCOEFF_NORMED): a `template_height`-row band from the top of segment N is
+  located in segment N-1; overlap = prev_h - match_row; segment N contributes only rows below the
+  overlap. Confidence < threshold falls back to nominal overlap_pct.
+- PROVEN pixel-exact: built a 800x5000 content-rich source, sliced it into 4 overlapping viewport
+  segments with per-segment drift (+7/-5/... rows simulating lazy-load timing), stitched, and the
+  result was byte-for-byte identical to the source (delta 0px, no divergent row). Overlaps found:
+  197, 181 (matching injected drift, conf 1.00).
+- Clamped final-segment case handled: capture.py clamps the last scroll to max_scroll, giving an
+  arbitrary/large final overlap. A first cut used a narrow drift band around nominal and MISSED it
+  (fallback → 830px of duplicated content). Fixed by searching the full plausible overlap range
+  [ph - min(ph,ch), ph]; the 1022px final overlap is now detected at conf 1.00. This was a real
+  bug caught by the reconstruction check, not a hypothetical.
+- Multi-strip split verified: with max_strip_height=2000 the 5000px canvas wrote strip_0001..0003
+  (2000+2000+1000). Stale strips from a previous run are deleted before writing, so a shorter
+  re-stitch never leaves orphans (verified 3 strips → 1 on re-run).
+- hash-skip verified: 2nd run (no --force) prints "Already stitched ... skipping"; input_hash is
+  sha256 of each segment's name+size so a re-capture invalidates it. --force re-stitches.
+- --cleanup-segments verified: deletes segments/ after a successful stitch (default keeps them;
+  decision below). --dry-run with no segments prints the plan and exits 0 without touching disk.
+- Strip writes are atomic: cv2.imencode('.png') in memory → temp file + os.replace (cv2.imwrite
+  can't target a .tmp extension, so encode-then-write is used instead).
+- Preflight reuses doctor.CHECK_FUNCS (python_version, venv, dependencies, folders, disk_space —
+  no network/playwright needed for stitching). Exception handler + heartbeat follow capture.py.
+
+## What works (tested prior session — MS-01c)
 - Domain guard is hard-coded (`ALLOWED_DOMAINS = ["staging.local"]` at module top, not read from
   pipeline_config.json, per explicit requirement). Tested for real: `python webtoon_capture.py
   --creator_id=testc --series_id=tests --chapter_id=ch1 --url="https://google.com"` refused
@@ -85,9 +113,10 @@ DONE
   easyocr/torch (~9 min on this machine's connection).
 
 ## What is NOT done
-- webtoon_capture.py: segment STITCHING into full chapter images (explicitly deferred to next
-  session — this session stops at raw overlapping segment screenshots in
-  chapters/{creator_id}/{series_id}/{chapter_id}/segments/)
+- webtoon_stitch.py: real-platform verification (stitch actual captured segments end to end) —
+  only synthetic exact-crop data has been tested. Real screenshots may have sub-pixel/anti-alias
+  differences at seams; the confidence threshold + fallback exist for this but are unproven on
+  live captures. User should run capture→stitch on the live staging chapter and eyeball the strip.
 - webtoon_capture.py: real-platform capture test (manual login, headless scroll capture) —
   needs to be run by the user locally against the actual staging platform, not this dev machine
 - extraction stage (chapter image → text)
@@ -105,15 +134,7 @@ DONE
   browser automation), but extraction.py (next-next session) will need it
 
 ## Exact next step
-MS-01d: build the STITCHING step for webtoon_capture.py's output — merge the overlapping
-numbered segments in chapters/{creator_id}/{series_id}/{chapter_id}/segments/ into full
-deduplicated chapter image(s), using the known overlap_pct (from pipeline_config.json's
-`capture` block) to guide alignment (template matching / pixel-diff refinement for drift, since
-lazy-load timing can make actual overlap vary slightly from the nominal 12%). Decide + implement
-where stitched output lives (likely chapters/{creator_id}/{series_id}/{chapter_id}/stitched/) and
-whether segments/ is kept or cleaned up after a successful stitch. Follow the same --dry-run /
-preflight / hash-skip / heartbeat / exception-handler pattern. After stitching is solid, MS-02
-(deferred from this session) is: build extraction.py (chapter image → text stage) — read
+MS-02: build extraction.py (chapter image → text stage) — read
 tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
 implement the free path (easyocr, tesseract fallback) fully working with zero API keys since
@@ -125,7 +146,20 @@ reimplementing dependency checks.
 ## Blockers
 (none — ffmpeg is now installed and doctor.py confirms a clean pass end to end)
 
-## Decisions made this session
+## Decisions made this session (MS-01d)
+- Stitching is a SEPARATE stage script (webtoon_stitch.py), not folded into webtoon_capture.py —
+  each pipeline stage is its own script with its own state file (jobs/stitch_state.json).
+- Stitched output lives in chapters/{creator}/{series}/{chapter}/stitched/ as strip_####.png
+  (already covered by the `chapters/*/` gitignore). segments/ is KEPT by default after a
+  successful stitch (safer — allows re-stitch without re-capture); pass --cleanup-segments (or
+  set stitch.cleanup_segments true) to delete them.
+- Matcher searches the FULL plausible overlap range, not a narrow band around nominal overlap_pct.
+  This is required to catch the capturer's clamped final segment (arbitrary large overlap).
+  drift_margin_pct is therefore now vestigial (left in config for back-compat).
+- Very tall canvases split at stitch.max_strip_height (default 20000px) into multiple strips so
+  downstream OCR/vision stages get manageable images and no single PNG is unwieldy.
+
+## Decisions made prior session (MS-01c)
 - `.gitignore` gained `auth_state.json` (holds live session cookies via Playwright storage_state
   — must never be committed) and `chapters/*/` (captured/stitched chapter images are large binary
   pipeline output, not source).
