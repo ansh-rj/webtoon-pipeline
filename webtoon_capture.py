@@ -41,10 +41,14 @@ DEFAULT_CAPTURE_CONFIG = {
     "image_load_timeout_ms": 15000,
     "max_segments": 400,
     # --- stitching (segments -> strip.png) ---
-    "stitch_slice_height": 200,     # rows sampled from the top of segment N+1 as the match template
-    "stitch_match_threshold": 0.5,  # TM_CCOEFF_NORMED below this -> fall back to nominal overlap
-    "stitch_h_jitter": 20,          # +/- px of horizontal jitter tolerated between segments
-    "stitch_outlier_tol": 0.25,     # flag a seam whose overlap deviates >25% from the median
+    # Webtoon content is a narrow centred column inside wide uniform (black) side
+    # margins; alignment is done on the detected content column. An overlap is only
+    # trimmed when it is VERIFIED to duplicate (NCC on textured rows), else segments
+    # are concatenated untrimmed so unique content is never deleted.
+    "stitch_crop_to_content": True,  # detect the content column, ignore side margins, crop output to it
+    "stitch_content_std_frac": 0.15, # a column counts as "content" if its std > this fraction of the peak
+    "stitch_overlap_min_ncc": 0.7,   # only trim a seam if its overlap region matches at least this well
+    "stitch_min_advance_px": 40,     # smallest plausible per-segment scroll advance
 }
 
 CURRENT_UNIT = {"name": None}
@@ -198,15 +202,18 @@ def capture_chapter(args, cap_cfg):
     max_segments = cap_cfg["max_segments"]
     step = max(1, int(viewport_height * (1 - overlap_pct)))
 
-    with sync_playwright() as p:  #CHANGE FROM HERE
+    with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Browser viewport MUST match viewport_height used for `step`/`max_scroll`
+        # below: each screenshot is viewport_height tall, so if the scroll step is
+        # derived from a different height we either gap (over-scroll) or duplicate.
         context = browser.new_context(
             storage_state=str(AUTH_STATE_PATH),
-            viewport={'width': 1920, 'height': 1080},
+            viewport={'width': viewport_width, 'height': viewport_height},
             device_scale_factor=1
         )
         page = context.new_page()
-        page.set_viewport_size({"width": 1920, "height": 1080}) #TO HERE
+        page.set_viewport_size({"width": viewport_width, "height": viewport_height})
 
         print(f"[capture] navigating to {args.url}")
 
@@ -279,53 +286,114 @@ def strip_path_for(creator_id, series_id, chapter_id):
     return CHAPTERS_DIR / creator_id / series_id / chapter_id / "strip.png"
 
 
-def detect_seam_overlap(prev_gray, cur_gray, cap_cfg, nominal_overlap):
-    """How many top rows of cur_gray duplicate the bottom of prev_gray.
+def detect_content_column(grays, cap_cfg):
+    """Find the horizontal span holding the actual comic.
 
-    Slides a top slice of the current segment against the bottom region of the
-    previous one via normalized cross-correlation, tolerating slight horizontal
-    jitter. Returns (overlap_rows, confidence, h_shift, used_fallback).
-    Near-uniform (ambiguous) regions score below threshold -> nominal fallback.
+    Webtoon readers render the strip as a narrow centred column with wide uniform
+    (usually black) side margins. Those margins are identical in every segment and
+    match at any vertical offset, wrecking alignment. Return (x0, x1) of the widest
+    contiguous run of textured columns (per-column std above a fraction of the peak),
+    sampled across the chapter. Falls back to the full width if nothing stands out.
+    """
+    import numpy as np
+
+    sample_idx = list(range(0, len(grays), max(1, len(grays) // 15))) or [0]
+    col_std = np.mean([grays[i].astype(np.float32).std(axis=0) for i in sample_idx], axis=0)
+    width = len(col_std)
+    thr = max(6.0, float(col_std.max()) * cap_cfg["stitch_content_std_frac"])
+    active = col_std > thr
+    best = (0, width)  # default: full width
+    i = 0
+    best_len = 0
+    while i < width:
+        if active[i]:
+            j = i
+            while j < width and active[j]:
+                j += 1
+            if j - i > best_len:
+                best_len, best = j - i, (i, j)
+            i = j
+        else:
+            i += 1
+    x0, x1 = best
+    if best_len < width * 0.05:  # nothing meaningful found -> keep full width
+        return 0, width
+    pad = 10
+    return max(0, x0 - pad), min(width, x1 + pad)
+
+
+def detect_verified_overlap(prev_col, cur_col, cap_cfg):
+    """Find the vertical advance whose overlap region genuinely duplicates.
+
+    prev_col/cur_col are float32 grayscale content columns of equal width & height H.
+    For a candidate advance A, prev_col[A:H] must equal cur_col[0:H-A] (the shared,
+    re-scrolled region).
+
+    Candidates come from cv2.matchTemplate at 1px resolution: up to three textured
+    bands from cur's upper portion are located inside prev (black bands are skipped --
+    they match anywhere). Each candidate is then VERIFIED by NCC over the whole
+    overlap region, restricted to rows textured in BOTH segments, so repeated motifs
+    or gutters can't fake a match.
+
+    Returns (advance, overlap, ncc, verified). If no candidate verifies above
+    stitch_overlap_min_ncc there is no trustworthy overlap (a capture gap or an
+    ambiguous seam) -> advance=H, overlap=0, verified=False: we CONCATENATE and
+    trim nothing, so real content is never deleted.
     """
     import cv2
+    import numpy as np
 
-    ph, pw = prev_gray.shape[:2]
-    ch, cw = cur_gray.shape[:2]
-    jitter = int(cap_cfg["stitch_h_jitter"])
-    # The top slice of cur must fit *within* the overlap region of prev, else it
-    # extends past prev's bottom and can never align at the true offset. Cap it
-    # under the nominal overlap (with headroom for the actual overlap running a
-    # bit larger than nominal). Never let it exceed either segment's height.
-    slice_cap = max(1, int(nominal_overlap * 0.8))
-    slice_h = max(1, min(int(cap_cfg["stitch_slice_height"]), slice_cap, ch, ph))
+    H = prev_col.shape[0]
+    lo = int(cap_cfg["stitch_min_advance_px"])
+    a = prev_col[:, ::2]  # subsample columns for speed; alignment is vertical only
+    b = cur_col[:, ::2]
+    a_std = a.std(axis=1)
+    b_std = b.std(axis=1)
 
-    # Template = top slice of cur, cropped horizontally by `jitter` on each side
-    # so it can slide left/right within prev when the columns don't line up.
-    x0 = min(jitter, max(0, (cw - 1) // 2))
-    template = cur_gray[0:slice_h, x0:cw - x0] if cw - 2 * x0 >= 1 else cur_gray[0:slice_h, :]
+    def ncc_at(A):
+        ov = H - A
+        if ov < 40 or A < lo:
+            return None
+        ra, rb = a[A:H], b[0:ov]
+        m = (a_std[A:H] > 6) & (b_std[0:ov] > 6)
+        if int(m.sum()) < 40:
+            return None
+        x = ra[m].ravel(); y = rb[m].ravel()
+        x = x - x.mean(); y = y - y.mean()
+        d = float(np.sqrt((x * x).sum() * (y * y).sum()))
+        return None if d < 1e-6 else float((x * y).sum() / d)
 
-    # Search the full plausible overlap span in prev: cur's row 0 can align
-    # anywhere from prev row (ph - min(ph,ch)) down to prev row (ph - slice_h).
-    s0 = max(0, ph - min(ph, ch))
-    search = prev_gray[s0:ph, :]
-    if search.shape[0] < slice_h or search.shape[1] < template.shape[1]:
-        return nominal_overlap, 0.0, 0, True
+    # Collect candidate advances from textured 40px bands: cur's upper bands located
+    # within prev (A = match_y - band_row), and symmetrically prev's lower bands
+    # located within cur (A = band_row - match_y), which catches small overlaps the
+    # first direction can't fit. Every candidate is verified below before any trim.
+    band_h = 40
+    candidates = set()
 
-    # Near-uniform template (a solid gutter) has no texture to lock onto -- NCC
-    # becomes degenerate and reports a spurious high score against any flat region.
-    # Treat that as ambiguous and fall back to the nominal scroll offset.
-    if float(template.std()) < 3.0:
-        return nominal_overlap, 0.0, 0, True
+    def add_candidates(src, dst, rows, sign):
+        for r0 in rows:
+            band = src[r0:r0 + band_h]
+            if float(band.std(axis=1).mean()) < 8:
+                continue
+            res = cv2.matchTemplate(dst, band, cv2.TM_CCOEFF_NORMED)[:, 0]
+            for y in np.argsort(res)[-8:]:
+                A = (int(y) - r0) if sign > 0 else (r0 - int(y))
+                if lo <= A <= H - band_h:
+                    candidates.add(A)
 
-    res = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, max_loc = cv2.minMaxLoc(res)
-    if max_val < cap_cfg["stitch_match_threshold"]:
-        return nominal_overlap, float(max_val), 0, True
+    add_candidates(b, a, range(0, int(H * 0.6) - band_h, 120), +1)   # cur top bands in prev
+    add_candidates(a, b, range(int(H * 0.4), H - band_h, 120), -1)   # prev bottom bands in cur
 
-    match_row = s0 + max_loc[1]
-    overlap = max(0, min(ph - match_row, ch))
-    h_shift = max_loc[0] - x0  # how far cur is shifted relative to prev (px)
-    return overlap, float(max_val), int(h_shift), False
+    best_A, best_c = None, -2.0
+    for A0 in candidates:
+        for A in (A0 - 1, A0, A0 + 1):  # tolerate 1px rounding
+            c = ncc_at(A)
+            if c is not None and c > best_c:
+                best_A, best_c = A, c
+
+    if best_A is None or best_c < cap_cfg["stitch_overlap_min_ncc"]:
+        return H, 0, (0.0 if best_c < -1 else round(best_c, 2)), False
+    return best_A, H - best_A, round(best_c, 2), True
 
 
 def stitch_segments(args, cap_cfg):
@@ -354,64 +422,47 @@ def stitch_segments(args, cap_cfg):
             raise RuntimeError(f"Failed to read {p.name} (corrupt or not a PNG).")
         imgs.append(im)
 
-    # Normalise width (crop to the narrowest) so vstack/NCC line up.
+    # Normalise width (crop to the narrowest) so vstack lines up.
     min_w = min(im.shape[1] for im in imgs)
     imgs = [im[:, :min_w] for im in imgs]
     grays = [cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) for im in imgs]
 
-    # Derive nominal overlap from the ACTUAL segment height, not the config
-    # viewport_height (which can be stale if the capturer overrode it). The
-    # median height is robust to the final short segment.
-    median_seg_h = int(np.median([im.shape[0] for im in imgs]))
-    nominal_overlap = max(1, int(median_seg_h * cap_cfg["overlap_pct"]))
-    if median_seg_h != cap_cfg["viewport_height"]:
-        print(f"[stitch] note: actual segment height {median_seg_h}px != config "
-              f"viewport_height {cap_cfg['viewport_height']}px; using actual for nominal overlap "
-              f"({nominal_overlap}px).")
+    # Restrict alignment (and, by default, the output) to the comic content column.
+    if cap_cfg["stitch_crop_to_content"]:
+        cx0, cx1 = detect_content_column(grays, cap_cfg)
+        if cx1 - cx0 < min_w:
+            print(f"[stitch] content column x={cx0}..{cx1} ({cx1-cx0}px of {min_w}px); "
+                  f"side margins ignored for alignment and cropped from output.")
+    else:
+        cx0, cx1 = 0, min_w
+    col_gray = [g[:, cx0:cx1].astype(np.float32) for g in grays]
 
-    # First pass: measure every seam, so we can report outliers against the median.
-    seams = []  # dicts: idx, overlap, conf, h_shift, fallback
+    # Measure each seam: trim ONLY where the overlap region is verified to duplicate;
+    # otherwise concatenate (trim nothing) so we never delete unique content.
+    seams = []  # idx, advance, overlap, ncc, verified
     last_heartbeat = time.time()
     for i in range(1, len(imgs)):
-        ov, conf, hshift, fb = detect_seam_overlap(grays[i - 1], grays[i], cap_cfg, nominal_overlap)
-        # clamp so a bad match can never eat a whole segment
-        ov = max(0, min(ov, imgs[i].shape[0]))
-        seams.append({"idx": i, "overlap": ov, "conf": conf, "h_shift": hshift, "fallback": fb})
+        adv, ov, ncc, verified = detect_verified_overlap(col_gray[i - 1], col_gray[i], cap_cfg)
+        seams.append({"idx": i, "advance": adv, "overlap": ov, "ncc": ncc, "verified": verified})
         if time.time() - last_heartbeat > 30:
             log_heartbeat(f"[stitch] {unit_name} seam {i}/{len(imgs)-1}")
             last_heartbeat = time.time()
 
-    overlaps = [s["overlap"] for s in seams]
-    median_ov = int(np.median(overlaps)) if overlaps else nominal_overlap
-    tol = cap_cfg["stitch_outlier_tol"]
-
-    # Build the strip and print a per-seam table with pixel y-positions.
-    parts = [imgs[0]]
-    y_cursor = imgs[0].shape[0]  # running y in the final strip where the next seam sits
-    print("\n  seam  segment  overlap_px  conf   h_shift  source     strip_y")
-    print("  ----  -------  ----------  -----  -------  ---------  -------")
+    # Build the strip (content-cropped colour) and print a per-seam table.
+    imgs_col = [im[:, cx0:cx1] for im in imgs]
+    parts = [imgs_col[0]]
+    y_cursor = imgs_col[0].shape[0]
+    print("\n  seam  segment  advance  trimmed  ncc    action       strip_y")
+    print("  ----  -------  -------  -------  -----  -----------  -------")
     for s in seams:
         i = s["idx"]
-        ov = s["overlap"]
-        new_rows = imgs[i].shape[0] - ov
-        outlier = abs(ov - median_ov) > tol * max(1, median_ov)
-        flags = []
-        if s["fallback"]:
-            flags.append("FALLBACK")
-        if outlier:
-            flags.append("OUTLIER")
-        if abs(s["h_shift"]) > 0:
-            flags.append(f"hshift={s['h_shift']:+d}")
-        src = "fallback" if s["fallback"] else f"{s['conf']:.2f}"
-        seam_y = y_cursor  # the seam in strip.png is at this y (top edge of appended block)
-        if new_rows <= 0:
-            print(f"  {i:4d}  {i+1:7d}  {ov:10d}  {src:>5}  {s['h_shift']:+7d}  "
-                  f"{'CONTAINED':9s}  {seam_y:7d}  {' '.join(flags)}")
-            continue
-        parts.append(imgs[i][ov:])
-        y_cursor += new_rows
-        print(f"  {i:4d}  {i+1:7d}  {ov:10d}  {src:>5}  {s['h_shift']:+7d}  "
-              f"{'append':9s}  {seam_y:7d}  {' '.join(flags)}")
+        adv = s["advance"]
+        action = f"trim {s['overlap']}px" if s["verified"] else "concat(gap?)"
+        seam_y = y_cursor
+        parts.append(imgs_col[i][imgs_col[i].shape[0] - adv:])
+        y_cursor += adv
+        print(f"  {i:4d}  {i+1:7d}  {adv:7d}  {s['overlap']:7d}  {s['ncc']:5.2f}  "
+              f"{action:11s}  {seam_y:7d}")
 
     strip = np.vstack(parts)
     out_path = strip_path_for(args.creator_id, args.series_id, args.chapter_id)
@@ -426,17 +477,25 @@ def stitch_segments(args, cap_cfg):
         os.fsync(f.fileno())
     os.replace(tmp, out_path)
 
-    n_fallback = sum(1 for s in seams if s["fallback"])
-    n_outlier = sum(1 for s in seams if abs(s["overlap"] - median_ov) > tol * max(1, median_ov))
-    print(f"\n[stitch] median overlap {median_ov}px (nominal {nominal_overlap}px), "
-          f"{n_fallback} fallback seam(s), {n_outlier} outlier seam(s)")
+    n_trim = sum(1 for s in seams if s["verified"])
+    n_gap = len(seams) - n_trim
+    trimmed_px = sum(s["overlap"] for s in seams if s["verified"])
+    print(f"\n[stitch] {n_trim}/{len(seams)} seams had verified overlap (trimmed {trimmed_px}px total); "
+          f"{n_gap} seams concatenated with no trim (no reliable overlap).")
+    if n_gap > len(seams) // 3:
+        print("[stitch] WARNING: many seams lack real overlap. The segments were likely captured")
+        print("  with too large a scroll step (over-scroll), so content is MISSING between them.")
+        print("  This is a capture problem, not a stitch one — no stitcher can recover unseen pixels.")
+        print("  Fix: re-capture this chapter (the scroll step is now corrected in webtoon_capture.py):")
+        print(f"    python {Path(__file__).name} --creator_id={args.creator_id} "
+              f"--series_id={args.series_id} --chapter_id={args.chapter_id} --url=\"...\" --force")
     print(f"[stitch] strip.png is {strip.shape[1]}x{strip.shape[0]} at {out_path}")
     print("Raw segments kept in segments/ — inspect strip.png, then re-run with --cleanup-segments to remove them.")
 
     mark_unit(STATE_PATH, unit_name, "STITCHED",
               strip_height=int(strip.shape[0]), seam_count=len(seams),
-              median_overlap=median_ov, fallback_seams=n_fallback,
-              outlier_seams=n_outlier, strip_path=str(out_path))
+              trimmed_seams=n_trim, gap_seams=n_gap, trimmed_px=int(trimmed_px),
+              strip_path=str(out_path))
 
 
 def main():
@@ -475,8 +534,9 @@ def main():
             print(f"Segments dir: {seg_dir}")
             print(f"Segments found: {n}")
             print(f"Output: {strip_path_for(args.creator_id, args.series_id, args.chapter_id)}")
-            print(f"Slice height {cap_cfg['stitch_slice_height']}px, match threshold "
-                  f"{cap_cfg['stitch_match_threshold']}, h-jitter +/-{cap_cfg['stitch_h_jitter']}px")
+            print(f"Alignment: verified-overlap NCC on the detected content column "
+                  f"(trim only when overlap matches >= {cap_cfg['stitch_overlap_min_ncc']}, else concatenate).")
+            print(f"Crop output to content column: {cap_cfg['stitch_crop_to_content']}")
             print("No changes made. Re-run without --dry-run to stitch.")
             return
         preflight(["python_version", "venv", "dependencies", "folders", "disk_space"])

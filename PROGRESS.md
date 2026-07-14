@@ -3,15 +3,66 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01f — resolved the two-stitcher redundancy: `--stitch` is canonical; webtoon_stitch.py deleted
+MS-01g — root-caused the "uneven stitch": capture over-scroll bug + lossless verified-overlap stitcher
 
 ## Last completed
-MS-01d — webtoon_stitch.py: overlap-detect + trim stitching of segments into seamless strip(s)
+MS-01f — resolved the two-stitcher redundancy: `--stitch` is canonical; webtoon_stitch.py deleted
 
 ## State
 DONE
 
-## Files touched this session (MS-01e) — real state audited after a mid-run interruption
+## MS-01g summary (this session) — READ THIS BEFORE TRUSTING OLDER STITCH NOTES BELOW
+User reported the real-chapter strip was "very uneven" and then that "panels have hidden too much
+info" (content being trimmed away). Root-caused in two layers, both fixed:
+
+1. CAPTURE BUG (the true root cause): the 46 real segments were captured when config said
+   viewport_height=1600 but the browser was HARD-CODED to 1920x1080. Scroll step was computed
+   from config (1600*0.88=1408px) while each screenshot only showed 1080px -> the page advanced
+   1408px per shot, screenshots covered 1080px -> ~328px of comic MISSING between most segments,
+   and lazy-load jitter made actual advances irregular (measured: only ~9-11 of 45 seams have any
+   real overlap; ~22-35 are hard gaps). Content lost at capture time is UNRECOVERABLE by stitching.
+   FIX (code): capture_chapter now passes config viewport_width/height into the Playwright context
+   (single source of truth — step math and screenshot height can never diverge again). Config is
+   1920x1080, so step=950 < 1080 -> guaranteed 130px overlap on every future capture.
+   NOT YET RUN: needs a live re-capture by the user (browser+auth). Until then the current strip
+   necessarily has gaps where the capture skipped content.
+
+2. STITCHER: went through three algorithms this arc, in response to what real data showed:
+   a) full-width NCC (MS-01e): WRONG on real data — the comic is a ~719px content column centred
+      in 34% uniform black side margins (detected x=601..1320 of 1920); margins match at ANY
+      offset, so overlaps came out 163-1080px garbage and the strip looked chopped/uneven.
+   b) ORB feature voting on the content column: seams LOOKED continuous but a residual check
+      (NCC of the supposedly-duplicate overlap region at the chosen advance) showed 33/45 seams
+      trimming NON-matching (unique) content — this was the "panels hide info" complaint. ORB was
+      voting on repeated art motifs; brute-force best-NCC proved most seams have NO good alignment
+      (gaps), so ORB's confident-looking answers were unfalsifiable garbage.
+   c) FINAL (in code now): detect_verified_overlap() — candidates from cv2.matchTemplate of
+      textured 40px bands (BIDIRECTIONAL: cur-top bands searched in prev AND prev-bottom bands
+      searched in cur, so small overlaps are reachable; black bands skipped), each candidate then
+      VERIFIED by NCC over the entire implied overlap region on rows textured in BOTH segments.
+      Trim ONLY if verified NCC >= stitch_overlap_min_ncc (0.7); otherwise CONCATENATE UNTRIMMED
+      ("concat(gap?)" in the table) so unique content is never deleted. Lossless by construction.
+
+Verified this session:
+- Synthetic 4-segment set with known geometry (130px real overlaps at seams 1&3, a deliberate
+  328px capture gap at seam 2): trims exactly 130px/130px at NCC 1.00, concatenates the gap seam
+  (NCC 0.01). Exact expected behavior.
+- Real chapter: 10/45 seams verified & trimmed (2516px of true duplicates, e.g. seam 45 footer
+  784px @ NCC 1.00, seam 12 chapter-title card 40px @ NCC 1.00 — visually confirmed clean);
+  35/45 concatenated untrimmed. strip.png now 719x47164 (content-cropped). A WARNING block prints
+  when >1/3 of seams lack overlap, explaining the over-scroll capture problem and giving the exact
+  re-capture command.
+- Per-seam table now prints advance/trimmed/ncc/action/strip_y per seam.
+- Config `capture` block final stitch knobs: stitch_crop_to_content true, stitch_content_std_frac
+  0.15, stitch_overlap_min_ncc 0.7, stitch_min_advance_px 40 (ORB and slice/jitter knobs removed).
+
+## Files touched this session (MS-01g)
+- webtoon_capture.py: capture viewport unified with config; detect_content_column();
+  detect_verified_overlap() (replaces detect_seam_overlap/ORB); stitch_segments rewritten
+  (content-crop, verify-then-trim, gap warning); --stitch dry-run text updated.
+- pipeline_config.json: stitch knob set updated to match (see above).
+
+## Files touched in MS-01e (superseded detail, kept for history)
 - webtoon_capture.py (MODIFIED, complete + compiles + runs) — added `--stitch` mode: stitches
   existing segments/ into a single chapters/{ids}/strip.png (NOT the separate stitched/strip_####
   layout of webtoon_stitch.py — this is the per-user-spec variant). Also added `--cleanup-segments`
@@ -157,10 +208,12 @@ DONE
   easyocr/torch (~9 min on this machine's connection).
 
 ## What is NOT done
-- stitch QUALITY on real data: the live 46-segment chapter stitches but is UNEVEN (user-reported).
-  Under investigation in MS-01g — root-cause is a capture/stitch overlap mismatch (see below).
-- webtoon_capture.py: real-platform capture test (manual login, headless scroll capture) —
-  needs to be run by the user locally against the actual staging platform, not this dev machine
+- RE-CAPTURE of test/my_series/01 with the fixed scroll step (MUST be done by the user locally —
+  needs live site + auth). The current 46 segments were captured with the over-scroll bug, so the
+  current strip.png unavoidably has content gaps between most segments. After re-capture
+  (`--force`), `--stitch` should report most seams as verified ~130px trims and few/no gaps.
+- webtoon_capture.py: the fixed capture path (config-driven viewport, step=950) has NOT been run
+  live yet — same user-local constraint as above. Watch the first re-capture's seam table.
 - extraction stage (chapter image → text)
 - tts stage
 - script_generation stage
@@ -176,9 +229,10 @@ DONE
   browser automation), but extraction.py (next-next session) will need it
 
 ## Exact next step
-Stitcher redundancy is RESOLVED (MS-01f): canonical stitched output is chapters/{ids}/strip.png
-from `webtoon_capture.py --stitch`. extraction.py reads that.
-MS-02: build extraction.py (chapter image → text stage) — read
+FIRST (user, local): re-capture test/my_series/01 with the fixed capture
+(`python webtoon_capture.py --creator_id=test --series_id=my_series --chapter_id=01 --url="..."
+--force`), then `--stitch` and confirm the seam table shows mostly verified ~130px trims.
+THEN MS-02: build extraction.py (chapter image → text stage) — read
 tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
 implement the free path (easyocr, tesseract fallback) fully working with zero API keys since

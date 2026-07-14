@@ -45,7 +45,10 @@
       "Bash(find /c -maxdepth 4 -iname \"*webtoon*\")",
       "Bash(find /d -maxdepth 5 -iname \"*webtoon*\")",
       "Bash(venv/Scripts/python.exe webtoon_capture.py --creator_id=testc --series_id=tests --chapter_id=ch1 --url=\"https://staging.local/en/fantasy/local-of-local/season-1-ep-1-1local-floor/viewer?title_no=95&episode_no=2\" --dry-run)",
-      "Bash(echo \"EXIT CODE: $?\")"
+      "Bash(echo \"EXIT CODE: $?\")",
+      "Bash(venv/Scripts/python.exe -)",
+      "Bash(venv/Scripts/python.exe webtoon_capture.py --creator_id=synth --series_id=s --chapter_id=ch --stitch)",
+      "Bash(rm -rf chapters/synth chapters/test/my_series/01/strip_orb.png scratch_seg content_5_6_7.png orb_seam*.png segs_1_4.png)"
     ]
   }
 }
