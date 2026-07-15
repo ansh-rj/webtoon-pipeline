@@ -3,13 +3,16 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01g — root-caused the "uneven stitch": capture over-scroll bug + lossless verified-overlap stitcher
+MS-01g — CHECKPOINTED & committed (c6ea076). Capture over-scroll bug fixed + lossless
+verified-overlap stitcher. Next session starts at "Exact next step" below.
 
 ## Last completed
-MS-01f — resolved the two-stitcher redundancy: `--stitch` is canonical; webtoon_stitch.py deleted
+MS-01g — capture over-scroll root cause fixed; lossless verified-overlap stitcher (tested,
+committed). See "MS-01g summary" below for the full narrative.
 
 ## State
-DONE
+DONE — code compiles, both --stitch and capture dry-runs pass, synthetic + real-chapter stitch
+tested (details under "What works"). Working tree clean at checkpoint.
 
 ## MS-01g summary (this session) — READ THIS BEFORE TRUSTING OLDER STITCH NOTES BELOW
 User reported the real-chapter strip was "very uneven" and then that "panels have hidden too much
