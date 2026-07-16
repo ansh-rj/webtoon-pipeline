@@ -3,16 +3,59 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01g — CHECKPOINTED & committed (c6ea076). Capture over-scroll bug fixed + lossless
-verified-overlap stitcher. Next session starts at "Exact next step" below.
+MS-01h — DONE, not yet committed. Post-re-capture strip audit: chrome trim (header/footer/
+comments, size-agnostic) + two seam-verification fixes (thin-support text bands, flat-identity
+gutters). 67/67 seams verified on the re-captured 68-segment chapter.
 
 ## Last completed
-MS-01g — capture over-scroll root cause fixed; lossless verified-overlap stitcher (tested,
-committed). See "MS-01g summary" below for the full narrative.
+MS-01h — see "MS-01h summary" below. Prior: MS-01g (capture over-scroll fix + lossless
+verified-overlap stitcher, committed 8ab3272).
 
 ## State
-DONE — code compiles, both --stitch and capture dry-runs pass, synthetic + real-chapter stitch
-tested (details under "What works"). Working tree clean at checkpoint.
+DONE — user re-captured test/my_series/01 (68 segments, fixed scroll step); stitch now yields
+67/67 verified seams, strip.png 700x57228, visually audited. Working tree has uncommitted
+changes (webtoon_capture.py, pipeline_config.json, this file).
+
+## MS-01h summary (this session)
+User re-captured the chapter (68 segments at the fixed 950px step) and asked to audit the strip:
+"white padding" and a trailing comments section, sizes varying per chapter. Found and fixed three
+real issues; the "white padding" was NOT an issue:
+
+1. WHITE BANDS ARE CONTENT: the two >=100px near-white runs (~27% down the strip) are the
+   chapter title card ("Tower of God" on white) — legitimate art, left alone. Verified visually.
+
+2. CHROME TRIM (new): detect_chrome_rows() removes page chrome above/below the comic — nav bar,
+   end promos, recommendation carousel, COMMENTS — by reading the side margins: comic rows keep
+   margins uniform background; chrome rows put pixels there. Longest background run = comic;
+   texture blips < stitch_chrome_gap_px (150) are bridged. Size-agnostic by construction, so a
+   3-screen or 30-screen comments section trims identically across chapters. On this chapter:
+   trimmed 50px header + 6558px footer. Config: stitch_trim_chrome true, stitch_chrome_gap_px 150.
+   detect_content_column() also lost its 10px pad (was leaving margin-colored edge strips).
+
+3. DUPLICATED "TO BE CONTINUED" (real stitch bug, fixed): the TBC text appeared TWICE in the
+   strip. Root cause: ncc_at() required >=40 textured rows of support; a lone text line in a
+   black gutter gave ~10 rows -> candidate rejected -> concat -> duplicate. Fix: thin support
+   (<40 rows) is now accepted but must match at NCC >= max(0.9, threshold). Verified: TBC now
+   appears exactly once.
+
+4. FLAT-IDENTITY FALLBACK (fixed the remaining 7 concat seams): NCC is undefined on textureless
+   overlaps (solid-black gutters between panels), so those seams concatenated and padded the
+   strip with ~130px duplicate background each. New fallback: if the overlap at the nominal
+   advance (H*(1-overlap_pct), ±2px) is pixel-identical, trim it — lossless by definition.
+   Result: 67/67 seams verified (was 59/67), strip 700x57228 (was 700x58930 with dup padding).
+
+Verified this session (all on the re-captured real chapter):
+- TBC text: exactly 1 occurrence (template match >0.9 across full strip).
+- Comments/footer content: absent from strip (best match conf 0.32).
+- Random mid-chapter content bands: present exactly once each.
+- Strip head/tail: comic art, no chrome, no padding rows.
+- --stitch --dry-run prints the chrome-trim line; full run clean.
+
+## Files touched this session (MS-01h)
+- webtoon_capture.py: detect_chrome_rows() (new); stitch_segments calls it after vstack;
+  ncc_at() returns (ncc, support) + thin-support threshold; flat-identity fallback in
+  detect_verified_overlap(); detect_content_column pad removed; --stitch dry-run line added.
+- pipeline_config.json: + stitch_trim_chrome true, stitch_chrome_gap_px 150.
 
 ## MS-01g summary (this session) — READ THIS BEFORE TRUSTING OLDER STITCH NOTES BELOW
 User reported the real-chapter strip was "very uneven" and then that "panels have hidden too much
@@ -211,12 +254,11 @@ Verified this session:
   easyocr/torch (~9 min on this machine's connection).
 
 ## What is NOT done
-- RE-CAPTURE of test/my_series/01 with the fixed scroll step (MUST be done by the user locally —
-  needs live site + auth). The current 46 segments were captured with the over-scroll bug, so the
-  current strip.png unavoidably has content gaps between most segments. After re-capture
-  (`--force`), `--stitch` should report most seams as verified ~130px trims and few/no gaps.
-- webtoon_capture.py: the fixed capture path (config-driven viewport, step=950) has NOT been run
-  live yet — same user-local constraint as above. Watch the first re-capture's seam table.
+- COMMIT of MS-01h changes (webtoon_capture.py, pipeline_config.json, PROGRESS.md).
+- Chrome-trim tested on ONE chapter only; watch the "[stitch] chrome trim:" line on the next
+  few chapters (different comment-section sizes) — it should never trim mid-comic. If the
+  comic ever draws edge-to-edge (no side margins), detect_chrome_rows returns None and the
+  full strip is kept (safe default).
 - extraction stage (chapter image → text)
 - tts stage
 - script_generation stage
@@ -232,9 +274,7 @@ Verified this session:
   browser automation), but extraction.py (next-next session) will need it
 
 ## Exact next step
-FIRST (user, local): re-capture test/my_series/01 with the fixed capture
-(`python webtoon_capture.py --creator_id=test --series_id=my_series --chapter_id=01 --url="..."
---force`), then `--stitch` and confirm the seam table shows mostly verified ~130px trims.
+Commit MS-01h if not yet committed (webtoon_capture.py + pipeline_config.json + PROGRESS.md).
 THEN MS-02: build extraction.py (chapter image → text stage) — read
 tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,

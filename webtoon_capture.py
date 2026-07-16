@@ -49,6 +49,11 @@ DEFAULT_CAPTURE_CONFIG = {
     "stitch_content_std_frac": 0.15, # a column counts as "content" if its std > this fraction of the peak
     "stitch_overlap_min_ncc": 0.7,   # only trim a seam if its overlap region matches at least this well
     "stitch_min_advance_px": 40,     # smallest plausible per-segment scroll advance
+    # Page chrome (top nav bar, footer promos, comments, sidebars) shows TEXTURE in the
+    # side margins; comic rows keep margins uniformly background-colored. The longest
+    # margin-background run is the comic; rows outside it are trimmed from strip.png.
+    "stitch_trim_chrome": True,      # trim page chrome (nav/footer/comments) above and below the comic
+    "stitch_chrome_gap_px": 150,     # margin-texture blips shorter than this inside the comic are ignored
 }
 
 CURRENT_UNIT = {"name": None}
@@ -318,8 +323,7 @@ def detect_content_column(grays, cap_cfg):
     x0, x1 = best
     if best_len < width * 0.05:  # nothing meaningful found -> keep full width
         return 0, width
-    pad = 10
-    return max(0, x0 - pad), min(width, x1 + pad)
+    return x0, x1  # exact textured run; padding would show as margin-colored edge strips
 
 
 def detect_verified_overlap(prev_col, cur_col, cap_cfg):
@@ -351,17 +355,25 @@ def detect_verified_overlap(prev_col, cur_col, cap_cfg):
     b_std = b.std(axis=1)
 
     def ncc_at(A):
+        """NCC over the implied overlap, on rows textured in BOTH segments.
+
+        Returns (ncc, support_rows) or None. Thin support (a lone text band such
+        as "TO BE CONTINUED" inside an otherwise flat overlap) is allowed through
+        -- the caller demands a near-perfect NCC from it instead of rejecting it,
+        because rejecting meant concat -> that text band got DUPLICATED in the strip.
+        """
         ov = H - A
-        if ov < 40 or A < lo:
+        if ov < 12 or A < lo:
             return None
         ra, rb = a[A:H], b[0:ov]
         m = (a_std[A:H] > 6) & (b_std[0:ov] > 6)
-        if int(m.sum()) < 40:
+        sup = int(m.sum())
+        if sup < 12:
             return None
         x = ra[m].ravel(); y = rb[m].ravel()
         x = x - x.mean(); y = y - y.mean()
         d = float(np.sqrt((x * x).sum() * (y * y).sum()))
-        return None if d < 1e-6 else float((x * y).sum() / d)
+        return None if d < 1e-6 else (float((x * y).sum() / d), sup)
 
     # Collect candidate advances from textured 40px bands: cur's upper bands located
     # within prev (A = match_y - band_row), and symmetrically prev's lower bands
@@ -384,16 +396,91 @@ def detect_verified_overlap(prev_col, cur_col, cap_cfg):
     add_candidates(b, a, range(0, int(H * 0.6) - band_h, 120), +1)   # cur top bands in prev
     add_candidates(a, b, range(int(H * 0.4), H - band_h, 120), -1)   # prev bottom bands in cur
 
-    best_A, best_c = None, -2.0
+    best_A, best_c, best_sup = None, -2.0, 0
     for A0 in candidates:
         for A in (A0 - 1, A0, A0 + 1):  # tolerate 1px rounding
-            c = ncc_at(A)
-            if c is not None and c > best_c:
-                best_A, best_c = A, c
+            r = ncc_at(A)
+            if r is not None and r[0] > best_c:
+                best_A, best_c, best_sup = A, r[0], r[1]
 
-    if best_A is None or best_c < cap_cfg["stitch_overlap_min_ncc"]:
-        return H, 0, (0.0 if best_c < -1 else round(best_c, 2)), False
-    return best_A, H - best_A, round(best_c, 2), True
+    # Thin support (< 40 textured rows, e.g. one line of text in a black gutter)
+    # is trustworthy only if it matches near-perfectly; broad support uses the
+    # configured threshold. Without the thin-support path, text-only overlaps
+    # (chapter cards, "TO BE CONTINUED") failed verification, concatenated, and
+    # showed up duplicated in the strip.
+    need = cap_cfg["stitch_overlap_min_ncc"] if best_sup >= 40 else max(
+        0.9, cap_cfg["stitch_overlap_min_ncc"])
+    if best_A is not None and best_c >= need:
+        return best_A, H - best_A, round(best_c, 2), True
+
+    # Flat-identity fallback: NCC can't verify a textureless overlap (solid-black
+    # gutters between panels), but if the overlap at the nominal capture advance is
+    # PIXEL-IDENTICAL, trimming one copy is lossless by definition -- even at a
+    # capture gap both flanks are pure background, so nothing visible is removed.
+    # Without this, flat seams concatenated and padded the strip with ~130px of
+    # duplicate background each (the "uneven black gaps" effect).
+    A_nom = H - int(round(H * cap_cfg["overlap_pct"]))
+    for A in range(max(lo, A_nom - 2), min(H - 12, A_nom + 3)):
+        if float(np.abs(prev_col[A:H] - cur_col[0:H - A]).mean()) < 0.5:
+            return A, H - A, 1.0, True
+
+    return H, 0, (0.0 if best_c < -1 else round(best_c, 2)), False
+
+
+def detect_chrome_rows(grays, advances, cx0, cx1, cap_cfg):
+    """Locate the comic's vertical extent in strip coordinates; rows outside are page chrome.
+
+    The episode strip itself never draws in the side margins -- they stay one uniform
+    background color. Page chrome (top nav bar, end-of-episode promos, share buttons,
+    recommendation carousels, the comments section, sidebars) DOES put pixels there.
+    So: build the strip's margin rows (stacked with the same advances as the strip),
+    mark rows whose margins match the dominant background, bridge texture blips shorter
+    than stitch_chrome_gap_px, and take the longest background run as the comic.
+
+    Sizes are never assumed -- a 3-screen or 30-screen comments section trims the same
+    way, which is what makes this robust across chapters. Returns (y0, y1) to keep,
+    or None when there are no margins to read or the detection looks untrustworthy.
+    """
+    import numpy as np
+
+    if cx1 - cx0 >= grays[0].shape[1] - 4:  # no side margins detected -> nothing to read
+        return None
+
+    def margin_rows(g):
+        return np.hstack([g[:, :cx0], g[:, cx1:]])
+
+    margins = [margin_rows(g) for g in grays]
+    samp = np.concatenate([m.ravel()[::37] for m in margins[:: max(1, len(margins) // 12)]])
+    bg = float(np.median(samp))
+
+    def bg_mask(m):
+        return (m.std(axis=1) < 8) & (np.abs(m.mean(axis=1) - bg) < 12)
+
+    parts = [bg_mask(margins[0])]
+    for i in range(1, len(margins)):
+        parts.append(bg_mask(margins[i])[margins[i].shape[0] - advances[i - 1]:])
+    mask = np.concatenate(parts)
+
+    gap = int(cap_cfg["stitch_chrome_gap_px"])
+    runs, i, n = [], 0, len(mask)
+    while i < n:
+        if mask[i]:
+            j = i
+            while j < n and mask[j]:
+                j += 1
+            if runs and i - runs[-1][1] < gap:  # bridge short texture blips (comic UI icons etc.)
+                runs[-1][1] = j
+            else:
+                runs.append([i, j])
+            i = j
+        else:
+            i += 1
+    if not runs:
+        return None
+    y0, y1 = max(runs, key=lambda r: r[1] - r[0])
+    if y1 - y0 < n * 0.3:  # comic should dominate the page; if not, don't trust the split
+        return None
+    return y0, y1
 
 
 def stitch_segments(args, cap_cfg):
@@ -465,6 +552,23 @@ def stitch_segments(args, cap_cfg):
               f"{action:11s}  {seam_y:7d}")
 
     strip = np.vstack(parts)
+
+    # Trim page chrome (top nav, footer promos, comments -- whatever size they are this
+    # chapter) by reading the side margins: comic rows keep them uniform, chrome doesn't.
+    if cap_cfg.get("stitch_trim_chrome", True):
+        advances = [s["advance"] for s in seams]
+        kept = detect_chrome_rows(grays, advances, cx0, cx1, cap_cfg)
+        if kept is None:
+            print("[stitch] chrome trim: no readable side margins / untrustworthy split -- keeping full strip.")
+        else:
+            y0, y1 = kept
+            print(f"[stitch] chrome trim: comic spans strip rows {y0}..{y1}; "
+                  f"trimming {y0}px of header chrome and {strip.shape[0] - y1}px of "
+                  f"footer chrome (promos/comments/recommendations).")
+            if y0:
+                print(f"[stitch] note: seam strip_y values in the table above shift down by {y0}px after this trim.")
+            strip = strip[y0:y1]
+
     out_path = strip_path_for(args.creator_id, args.series_id, args.chapter_id)
 
     ok, buf = cv2.imencode(".png", strip)
@@ -537,6 +641,7 @@ def main():
             print(f"Alignment: verified-overlap NCC on the detected content column "
                   f"(trim only when overlap matches >= {cap_cfg['stitch_overlap_min_ncc']}, else concatenate).")
             print(f"Crop output to content column: {cap_cfg['stitch_crop_to_content']}")
+            print(f"Trim page chrome (nav/footer/comments, any size): {cap_cfg.get('stitch_trim_chrome', True)}")
             print("No changes made. Re-run without --dry-run to stitch.")
             return
         preflight(["python_version", "venv", "dependencies", "folders", "disk_space"])

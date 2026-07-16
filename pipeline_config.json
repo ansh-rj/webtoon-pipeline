@@ -102,6 +102,8 @@
     "stitch_crop_to_content": true,
     "stitch_content_std_frac": 0.15,
     "stitch_min_advance_px": 40,
-    "stitch_overlap_min_ncc": 0.7
+    "stitch_overlap_min_ncc": 0.7,
+    "stitch_trim_chrome": true,
+    "stitch_chrome_gap_px": 150
   }
 }
