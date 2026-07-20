@@ -3,15 +3,28 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01j — DONE + committed (1177255). Small usability fix on top of MS-01i: `--cleanup-segments`
-now works STANDALONE (no `--url`, no `--stitch` needed), and as a safety refuses to delete unless
-that chapter's strip.png already exists. User hit "Missing --url" trying to clean up segments;
-that path was only reachable via --stitch before. Tested: dry-run lists segs+strip status;
-standalone refuses on ch03 (no strip yet); ran real cleanup of ch01's 76 segments (strip existed).
+MS-04 — panel_splitter.py (strip.png -> ordered panel crops). NEW stage between stitch and
+extraction. My chapters are CONTINUOUS vertical art (no blank gutters), so gap-splitting can't
+find cuts. Built segment mode as primary + gap mode kept for future guttered series (config
+`panel_split.mode`, default "segment").
+- segment mode: slice to a target aspect (default 9:16 tall), ~5% overlap so nothing is lost at a
+  seam, and place each cut on the LEAST-BUSY row (min mean-gradient / row-cost) within a search
+  window of the ideal boundary -> avoids slicing a face/bubble without needing a blank row.
+- Pure-CV stage like capture: NO tier/engine field. Config block `panel_split` (auto-added,
+  idempotent). Atomic panel writes, hash-skip on unchanged strip, --dry-run + preflight
+  (doctor.CHECK_FUNCS), heartbeat, global exception handler -- all per house style.
+- VISUAL VERIFICATION drove two fixes on the test chapter (this is the important part):
+  first run's window (15%) + flag reference (75th pct) were BOTH wrong -- sampled cuts showed one
+  slicing through a character's EYES (panel 8) and one through a head/hair (panel 26), NEITHER
+  flagged. Row-cost analysis proved calm (cost 0.0, solid-colour) rows existed nearby but outside
+  the 15% window (p08 needed ~40%). Fixes: search_window_pct 0.15->0.40; flag vs MEDIAN row-cost
+  (high_detail_mult 0.33) not a high quantile, since a chosen cut is always a local minimum.
+  Re-ran: 67 panels, 0 flagged, both former bad cuts now land on solid-black rows BELOW the
+  subject (face/head kept whole -- re-inspected the exact rows). 5 sample crops eyeballed clean.
+- Files: panel_splitter.py (new); pipeline_config.json (+ panel_split block, tuned values).
 
 ## Last completed
-MS-01j (committed 1177255). Prior: MS-01i (colour-agnostic chrome trim, committed 3ecc04f);
-MS-01h (chrome trim + seam fixes, committed 9c0eae4).
+MS-04 (panel_splitter.py) — pending commit. Prior: MS-01j (committed 1177255).
 
 ## State
 DONE — ch01 strip 700x57096, ch02 strip 700x77406; both end exactly at the comic (title card /
@@ -320,9 +333,9 @@ Verified this session:
   browser automation), but extraction.py (MS-03, next session) will need it
 
 ## Exact next step
-MS-01 (setup + capture + stitch) is complete and committed (through 1177255). NEXT is MS-03:
-build extraction.py (chapter image → text stage) — read
-tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
+MS-04 (panel_splitter.py) is complete and (about to be) committed. NEXT is MS-03: build
+extraction.py -- now operates on the PANEL CROPS from panel_splitter
+(chapters/{ids}/panels/panel_###.png), not the whole strip. Read tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
 implement the free path (easyocr, tesseract fallback) fully working with zero API keys since
 that's what's verified installed; stub the paid path (claude_vision / gemini_vision) behind the
