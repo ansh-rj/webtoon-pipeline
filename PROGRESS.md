@@ -317,11 +317,11 @@ Verified this session:
   can run
 - the tier "auto" → global tier → engine "auto" → tier_defaults resolver described in the open
   questions below is still unbuilt; not needed yet since capture has no tier/engine (it's pure
-  browser automation), but extraction.py (next-next session) will need it
+  browser automation), but extraction.py (MS-03, next session) will need it
 
 ## Exact next step
-MS-01 is complete and committed (through 1177255). NEXT is MS-02: build extraction.py (chapter
-image → text stage) — read
+MS-01 (setup + capture + stitch) is complete and committed (through 1177255). NEXT is MS-03:
+build extraction.py (chapter image → text stage) — read
 tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
 implement the free path (easyocr, tesseract fallback) fully working with zero API keys since
@@ -329,6 +329,8 @@ that's what's verified installed; stub the paid path (claude_vision / gemini_vis
 same interface so paid tier is wireable once a key is present in .env. extraction.py should call
 doctor.py's checks (or import run_checks from doctor.py) as its own preflight gate rather than
 reimplementing dependency checks.
+(Numbering note: "MS-02" only ever existed as a forward-reference in commit ff0f043; the setup and
+capture/stitch work all shipped under MS-01a..MS-01j. Extraction is MS-03.)
 
 ## Blockers
 (none — ffmpeg is now installed and doctor.py confirms a clean pass end to end)
