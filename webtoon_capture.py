@@ -643,7 +643,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true", help="Re-capture even if valid segments already exist for this URL.")
     parser.add_argument("--stitch", action="store_true", help="Stitch existing segments/ into strip.png (no capture, no URL needed).")
-    parser.add_argument("--cleanup-segments", action="store_true", help="With --stitch: delete segments/ after writing strip.png.")
+    parser.add_argument("--cleanup-segments", action="store_true", help="Delete segments/ once strip.png exists. Alone: just deletes. With --stitch: stitches first, then deletes.")
     parser.add_argument("--viewport-width", type=int, default=None)
     parser.add_argument("--viewport-height", type=int, default=None)
     parser.add_argument("--overlap-pct", type=float, default=None)
@@ -685,6 +685,27 @@ def main():
                 p.unlink()
                 removed += 1
             print(f"[stitch] cleaned up {removed} segment(s) from {seg_dir}")
+        return
+
+    # --- standalone cleanup mode: delete segments/, but only if strip.png already exists ---
+    if args.cleanup_segments:
+        seg_dir = segments_dir(args.creator_id, args.series_id, args.chapter_id)
+        strip_path = strip_path_for(args.creator_id, args.series_id, args.chapter_id)
+        segs = sorted(seg_dir.glob("segment_*.png"))
+        if args.dry_run:
+            print("=== webtoon_capture.py --cleanup-segments --dry-run ===")
+            print(f"Segments dir: {seg_dir}")
+            print(f"Segments found: {len(segs)}")
+            print(f"strip.png exists: {strip_path.exists()}")
+            print("No changes made. Re-run without --dry-run to delete segments.")
+            return
+        if not strip_path.exists():
+            print(f"Refusing to delete segments: {strip_path} does not exist yet. "
+                  f"Run with --stitch first so the chapter is safely stitched into strip.png.")
+            sys.exit(1)
+        for p in segs:
+            p.unlink()
+        print(f"[cleanup] deleted {len(segs)} segment(s) from {seg_dir}")
         return
 
     # --- capture mode: URL required ---
