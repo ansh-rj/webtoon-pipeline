@@ -3,18 +3,52 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01h — DONE, not yet committed. Post-re-capture strip audit: chrome trim (header/footer/
-comments, size-agnostic) + two seam-verification fixes (thin-support text bands, flat-identity
-gutters). 67/67 seams verified on the re-captured 68-segment chapter.
+MS-01i — DONE, not yet committed. Chrome-trim generalization fix after user captured a 2nd
+chapter (test/my_series/02) whose comments were NOT trimmed. Root-caused the colour assumption,
+rewrote detection to be colour-agnostic (margin texture + windowed density) + added a bounded
+page-bg trim for the centred share bar. Both chapters (01, 02) now trim clean.
 
 ## Last completed
-MS-01h — see "MS-01h summary" below. Prior: MS-01g (capture over-scroll fix + lossless
-verified-overlap stitcher, committed 8ab3272).
+MS-01i — see "MS-01i summary" below. Prior: MS-01h (chrome trim + seam fixes, committed 9c0eae4).
 
 ## State
-DONE — user re-captured test/my_series/01 (68 segments, fixed scroll step); stitch now yields
-67/67 verified seams, strip.png 700x57228, visually audited. Working tree has uncommitted
-changes (webtoon_capture.py, pipeline_config.json, this file).
+DONE — ch01 strip 700x57096, ch02 strip 700x77406; both end exactly at the comic (title card /
+"TO BE CONTINUED"), no comments/promos/share bar. 67/67 and 87/87 seams verified. Working tree
+has uncommitted changes (webtoon_capture.py, pipeline_config.json, PROGRESS.md).
+
+## MS-01i summary (this session)
+User captured a SECOND chapter (02, 88 segments) and reported comments still present in its strip.
+The MS-01h chrome trim worked on ch01 but failed on ch02. Two distinct failures, both fixed:
+
+1. COLOUR ASSUMPTION (the real bug): MS-01h's detect_chrome_rows keyed on the MEDIAN margin
+   COLOUR (bg) and marked rows whose margins matched it as comic. ch01's comic margins are BLACK
+   and its footer is WHITE, so that worked by luck. ch02's comic margins are WHITE -- the SAME
+   colour as the comments background -- so bg=255 matched everything and nothing trimmed. Colour
+   is not a discriminator. FIX: key on margin TEXTURE instead. Comic margins are a plain band
+   (any colour); page chrome (nav/promos/share/carousel/COMMENTS/sidebars) spreads pixels full
+   width, so its margins are textured (per-row std > stitch_chrome_margin_std=10).
+2. PARTLY-TEXTURED COMMENTS: comment margins are only ~30-45% textured rows (uniform gaps between
+   comment blocks), so no single textured run is large -- a per-row+bridge approach missed it.
+   FIX: windowed chrome DENSITY (convolve over stitch_chrome_window_px=400; comic = density <
+   stitch_chrome_density_max=0.10). Comic stretches sit near 0, chrome stays high despite flicker.
+3. CENTRED SHARE BAR (residual): after the density cut ch02 still kept a ~170px "share this series"
+   bar -- its icons sit in the CONTENT COLUMN, not the margins, so margin texture can't see it.
+   FIX: a bounded page-bg trim (detect_chrome_rows now takes the assembled strip_gray) walks in
+   from each end over bright page-bg rows (mean > stitch_page_bg_min=200), capped at one window so
+   real bright artwork can't be eaten. ch02 77578 -> 77406; ch01 unaffected (its tail is black).
+
+Verified this session (both real chapters, through the actual --stitch path):
+- ch01: 700x57096, ends on the "Tower of God" title card; header 0px, footer 6740px trimmed.
+- ch02: 700x77406, ends exactly at "TO BE CONTINUED" (final eye panel intact); footer 5726px
+  trimmed. Comments, recommendation carousel, share bar all gone. Visually inspected both tails.
+- 67/67 and 87/87 seams verified (0 concat) on both.
+
+## Files touched this session (MS-01i)
+- webtoon_capture.py: detect_chrome_rows rewritten (texture + windowed density, colour-agnostic;
+  new strip_gray param for bounded page-bg trim); DEFAULT_CAPTURE_CONFIG chrome knobs replaced
+  (removed stitch_chrome_gap_px; added stitch_chrome_margin_std/window_px/density_max/page_bg_min);
+  stitch_segments passes strip_gray to detect_chrome_rows.
+- pipeline_config.json: same chrome knob set updated.
 
 ## MS-01h summary (this session)
 User re-captured the chapter (68 segments at the fixed 950px step) and asked to audit the strip:
@@ -254,11 +288,12 @@ Verified this session:
   easyocr/torch (~9 min on this machine's connection).
 
 ## What is NOT done
-- COMMIT of MS-01h changes (webtoon_capture.py, pipeline_config.json, PROGRESS.md).
-- Chrome-trim tested on ONE chapter only; watch the "[stitch] chrome trim:" line on the next
-  few chapters (different comment-section sizes) — it should never trim mid-comic. If the
-  comic ever draws edge-to-edge (no side margins), detect_chrome_rows returns None and the
-  full strip is kept (safe default).
+- COMMIT of MS-01i changes (webtoon_capture.py, pipeline_config.json, PROGRESS.md).
+- Chrome trim now validated on TWO chapters (black-margin comic + white-margin comic). Still
+  watch the "[stitch] chrome trim:" line on future chapters. Known limits of the current design:
+  (a) a comic that draws edge-to-edge with NO side margins -> detect_chrome_rows returns None,
+      full strip kept (safe). (b) the page-bg trim only catches BRIGHT (white) trailing bars;
+      a dark-themed share bar just past a dark comic ending would be kept -- revisit if seen.
 - extraction stage (chapter image → text)
 - tts stage
 - script_generation stage
@@ -274,7 +309,7 @@ Verified this session:
   browser automation), but extraction.py (next-next session) will need it
 
 ## Exact next step
-Commit MS-01h if not yet committed (webtoon_capture.py + pipeline_config.json + PROGRESS.md).
+Commit MS-01i if not yet committed (webtoon_capture.py + pipeline_config.json + PROGRESS.md).
 THEN MS-02: build extraction.py (chapter image → text stage) — read
 tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,

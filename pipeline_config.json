@@ -104,6 +104,9 @@
     "stitch_min_advance_px": 40,
     "stitch_overlap_min_ncc": 0.7,
     "stitch_trim_chrome": true,
-    "stitch_chrome_gap_px": 150
+    "stitch_chrome_margin_std": 10,
+    "stitch_chrome_window_px": 400,
+    "stitch_chrome_density_max": 0.10,
+    "stitch_page_bg_min": 200
   }
 }

@@ -49,11 +49,15 @@ DEFAULT_CAPTURE_CONFIG = {
     "stitch_content_std_frac": 0.15, # a column counts as "content" if its std > this fraction of the peak
     "stitch_overlap_min_ncc": 0.7,   # only trim a seam if its overlap region matches at least this well
     "stitch_min_advance_px": 40,     # smallest plausible per-segment scroll advance
-    # Page chrome (top nav bar, footer promos, comments, sidebars) shows TEXTURE in the
-    # side margins; comic rows keep margins uniformly background-colored. The longest
-    # margin-background run is the comic; rows outside it are trimmed from strip.png.
-    "stitch_trim_chrome": True,      # trim page chrome (nav/footer/comments) above and below the comic
-    "stitch_chrome_gap_px": 150,     # margin-texture blips shorter than this inside the comic are ignored
+    # Page chrome (top nav bar, footer promos, comments, sidebars) puts TEXTURE in the
+    # side margins; comic rows keep the margins plain (any colour). We flag rows with
+    # textured margins, then keep the longest stretch whose windowed chrome DENSITY
+    # stays low -- robust even when comments margins are only partly textured.
+    "stitch_trim_chrome": True,         # trim page chrome (nav/footer/comments) above and below the comic
+    "stitch_chrome_margin_std": 10,     # a margin row counts as "textured" (chrome) above this per-row std
+    "stitch_chrome_window_px": 400,     # sliding window for chrome-density smoothing
+    "stitch_chrome_density_max": 0.10,  # comic = rows whose windowed chrome density stays below this
+    "stitch_page_bg_min": 200,          # trailing/leading rows brighter than this are page-bg (share/promo bars) -> trimmed
 }
 
 CURRENT_UNIT = {"name": None}
@@ -427,51 +431,66 @@ def detect_verified_overlap(prev_col, cur_col, cap_cfg):
     return H, 0, (0.0 if best_c < -1 else round(best_c, 2)), False
 
 
-def detect_chrome_rows(grays, advances, cx0, cx1, cap_cfg):
+def detect_chrome_rows(grays, advances, cx0, cx1, cap_cfg, strip_gray=None):
     """Locate the comic's vertical extent in strip coordinates; rows outside are page chrome.
 
-    The episode strip itself never draws in the side margins -- they stay one uniform
-    background color. Page chrome (top nav bar, end-of-episode promos, share buttons,
-    recommendation carousels, the comments section, sidebars) DOES put pixels there.
-    So: build the strip's margin rows (stacked with the same advances as the strip),
-    mark rows whose margins match the dominant background, bridge texture blips shorter
-    than stitch_chrome_gap_px, and take the longest background run as the comic.
+    The comic strip fills only the centre content column; its side margins are one
+    plain background band (any colour -- black on some series, white on others). Page
+    chrome (nav bar, end-of-episode promos, share bar, recommendation carousel, the
+    COMMENTS section, sidebars) spreads pixels ACROSS the full page width, so its side
+    margins are TEXTURED. That texture -- not any particular colour -- is the tell.
+
+    Two subtleties this handles:
+      - COLOUR is not a discriminator: some comics have white side margins, the same
+        colour as a comments background. So we key on per-row margin texture (std over
+        a floor), not on matching a background colour. (The earlier colour-median
+        approach misclassified a white-margined comic as chrome -- chapter 02.)
+      - Comments margins are only PARTLY textured (uniform gaps between comment blocks),
+        so no single textured run is large. We therefore look at chrome DENSITY in a
+        sliding window: comic stretches sit near zero, chrome stretches stay high even
+        though individual rows flicker. The comic is the longest run whose windowed
+        chrome density stays below stitch_chrome_density_max.
+
+    Finally, if the assembled strip is supplied (strip_gray), a bounded page-background
+    trim removes a trailing/leading "share this series" bar or promo that sits centred
+    on the white page: its icons live in the content column (not the margins), so the
+    margin test can't see it, but it is always a run of bright page-bg rows just outside
+    the comic. We walk in from each end over bright rows, capped at one window so real
+    bright artwork can never be eaten wholesale.
 
     Sizes are never assumed -- a 3-screen or 30-screen comments section trims the same
-    way, which is what makes this robust across chapters. Returns (y0, y1) to keep,
-    or None when there are no margins to read or the detection looks untrustworthy.
+    way. Returns (y0, y1) to keep, or None when there are no margins to read or the
+    detection looks untrustworthy.
     """
     import numpy as np
 
     if cx1 - cx0 >= grays[0].shape[1] - 4:  # no side margins detected -> nothing to read
         return None
 
-    def margin_rows(g):
-        return np.hstack([g[:, :cx0], g[:, cx1:]])
+    floor = float(cap_cfg.get("stitch_chrome_margin_std", 10))
 
-    margins = [margin_rows(g) for g in grays]
-    samp = np.concatenate([m.ravel()[::37] for m in margins[:: max(1, len(margins) // 12)]])
-    bg = float(np.median(samp))
+    def chrome_row(g):  # 1.0 where the side margins carry texture (i.e. page chrome)
+        marg = np.hstack([g[:, :cx0], g[:, cx1:]])
+        return (marg.std(axis=1) > floor).astype(np.float32)
 
-    def bg_mask(m):
-        return (m.std(axis=1) < 8) & (np.abs(m.mean(axis=1) - bg) < 12)
+    parts = [chrome_row(grays[0])]
+    for i in range(1, len(grays)):
+        parts.append(chrome_row(grays[i])[grays[i].shape[0] - advances[i - 1]:])
+    chrome = np.concatenate(parts)
+    n = len(chrome)
 
-    parts = [bg_mask(margins[0])]
-    for i in range(1, len(margins)):
-        parts.append(bg_mask(margins[i])[margins[i].shape[0] - advances[i - 1]:])
-    mask = np.concatenate(parts)
+    win = int(cap_cfg.get("stitch_chrome_window_px", 400))
+    thr = float(cap_cfg.get("stitch_chrome_density_max", 0.10))
+    density = np.convolve(chrome, np.ones(win) / win, mode="same")
+    comic = density < thr
 
-    gap = int(cap_cfg["stitch_chrome_gap_px"])
-    runs, i, n = [], 0, len(mask)
+    runs, i = [], 0
     while i < n:
-        if mask[i]:
+        if comic[i]:
             j = i
-            while j < n and mask[j]:
+            while j < n and comic[j]:
                 j += 1
-            if runs and i - runs[-1][1] < gap:  # bridge short texture blips (comic UI icons etc.)
-                runs[-1][1] = j
-            else:
-                runs.append([i, j])
+            runs.append([i, j])
             i = j
         else:
             i += 1
@@ -480,6 +499,18 @@ def detect_chrome_rows(grays, advances, cx0, cx1, cap_cfg):
     y0, y1 = max(runs, key=lambda r: r[1] - r[0])
     if y1 - y0 < n * 0.3:  # comic should dominate the page; if not, don't trust the split
         return None
+
+    # Fine page-bg trim of a centred share/promo bar just outside the comic.
+    if strip_gray is not None:
+        page = float(cap_cfg.get("stitch_page_bg_min", 200))
+        rmean = strip_gray.mean(axis=1)
+        lim1 = max(y0, y1 - win)
+        while y1 > lim1 and rmean[y1 - 1] > page:
+            y1 -= 1
+        lim0 = min(y1, y0 + win)
+        while y0 < lim0 and rmean[y0] > page:
+            y0 += 1
+
     return y0, y1
 
 
@@ -557,7 +588,8 @@ def stitch_segments(args, cap_cfg):
     # chapter) by reading the side margins: comic rows keep them uniform, chrome doesn't.
     if cap_cfg.get("stitch_trim_chrome", True):
         advances = [s["advance"] for s in seams]
-        kept = detect_chrome_rows(grays, advances, cx0, cx1, cap_cfg)
+        strip_gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        kept = detect_chrome_rows(grays, advances, cx0, cx1, cap_cfg, strip_gray)
         if kept is None:
             print("[stitch] chrome trim: no readable side margins / untrustworthy split -- keeping full strip.")
         else:
