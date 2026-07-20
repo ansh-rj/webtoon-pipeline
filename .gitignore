@@ -7,3 +7,4 @@ jobs/*.json
 machine_profile.json
 auth_state.json
 chapters/*/
+scratch_pad/
