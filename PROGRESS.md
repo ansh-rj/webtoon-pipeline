@@ -3,18 +3,21 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-01i — DONE, not yet committed. Chrome-trim generalization fix after user captured a 2nd
-chapter (test/my_series/02) whose comments were NOT trimmed. Root-caused the colour assumption,
-rewrote detection to be colour-agnostic (margin texture + windowed density) + added a bounded
-page-bg trim for the centred share bar. Both chapters (01, 02) now trim clean.
+MS-01j — DONE + committed (1177255). Small usability fix on top of MS-01i: `--cleanup-segments`
+now works STANDALONE (no `--url`, no `--stitch` needed), and as a safety refuses to delete unless
+that chapter's strip.png already exists. User hit "Missing --url" trying to clean up segments;
+that path was only reachable via --stitch before. Tested: dry-run lists segs+strip status;
+standalone refuses on ch03 (no strip yet); ran real cleanup of ch01's 76 segments (strip existed).
 
 ## Last completed
-MS-01i — see "MS-01i summary" below. Prior: MS-01h (chrome trim + seam fixes, committed 9c0eae4).
+MS-01j (committed 1177255). Prior: MS-01i (colour-agnostic chrome trim, committed 3ecc04f);
+MS-01h (chrome trim + seam fixes, committed 9c0eae4).
 
 ## State
 DONE — ch01 strip 700x57096, ch02 strip 700x77406; both end exactly at the comic (title card /
-"TO BE CONTINUED"), no comments/promos/share bar. 67/67 and 87/87 seams verified. Working tree
-has uncommitted changes (webtoon_capture.py, pipeline_config.json, PROGRESS.md).
+"TO BE CONTINUED"), no comments/promos/share bar. 67/67 and 87/87 seams verified. ch01's raw
+segments have been cleaned up (strip.png kept); ch02 segments still on disk. Working tree clean
+except untracked scratch_pad/ (scratch, not committed).
 
 ## MS-01i summary (this session)
 User captured a SECOND chapter (02, 88 segments) and reported comments still present in its strip.
@@ -49,6 +52,15 @@ Verified this session (both real chapters, through the actual --stitch path):
   (removed stitch_chrome_gap_px; added stitch_chrome_margin_std/window_px/density_max/page_bg_min);
   stitch_segments passes strip_gray to detect_chrome_rows.
 - pipeline_config.json: same chrome knob set updated.
+
+## MS-01j summary (this session)
+Usability fix. `--cleanup-segments` was only handled INSIDE the `--stitch` branch, so running it
+alone fell through to capture mode and died with "Missing --url". Added a standalone cleanup
+branch BEFORE the capture URL check: deletes segments/ for the chapter, but only if strip.png
+already exists (otherwise refuses with a plain message, exit 1, so raw capture is never lost with
+no stitched output). --dry-run supported. Tested all three paths; cleaned up ch01's 76 segments
+for real. Committed 1177255.
+- webtoon_capture.py: standalone --cleanup-segments branch added; help text updated.
 
 ## MS-01h summary (this session)
 User re-captured the chapter (68 segments at the fixed 950px step) and asked to audit the strip:
@@ -288,7 +300,6 @@ Verified this session:
   easyocr/torch (~9 min on this machine's connection).
 
 ## What is NOT done
-- COMMIT of MS-01i changes (webtoon_capture.py, pipeline_config.json, PROGRESS.md).
 - Chrome trim now validated on TWO chapters (black-margin comic + white-margin comic). Still
   watch the "[stitch] chrome trim:" line on future chapters. Known limits of the current design:
   (a) a comic that draws edge-to-edge with NO side margins -> detect_chrome_rows returns None,
@@ -309,8 +320,8 @@ Verified this session:
   browser automation), but extraction.py (next-next session) will need it
 
 ## Exact next step
-Commit MS-01i if not yet committed (webtoon_capture.py + pipeline_config.json + PROGRESS.md).
-THEN MS-02: build extraction.py (chapter image → text stage) — read
+MS-01 is complete and committed (through 1177255). NEXT is MS-02: build extraction.py (chapter
+image → text stage) — read
 tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
 implement the free path (easyocr, tesseract fallback) fully working with zero API keys since
