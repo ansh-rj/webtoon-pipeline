@@ -120,6 +120,9 @@
     "search_window_pct": 0.40,
     "high_detail_mult": 0.33,
     "min_last_panel_frac": 0.3,
+    "max_segment_height_mult": 1.6,
+    "min_segment_pixels_width": 1080,
+    "min_segment_pixels_height": 1920,
     "gap_row_std_max": 8.0,
     "gap_min_px": 24,
     "gap_min_panel_px": 200

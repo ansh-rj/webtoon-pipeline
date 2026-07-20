@@ -48,6 +48,15 @@ DEFAULT_SPLIT_CONFIG = {
     "high_detail_mult": 0.33,    # flag a cut whose row-cost exceeds this multiple of the strip's MEDIAN row-cost;
                                  # chosen cuts are local minima, so comparing to median (not a high quantile) is what catches a face/bubble seam
     "min_last_panel_frac": 0.30, # a trailing sliver shorter than this fraction is merged into the prior panel
+    "max_segment_height_mult": 1.6,  # HEIGHT BOUND: never cut a panel taller than this x seg_h (avoids an absurdly long pan).
+                                     # This only ever makes a crop SHORTER, so it can never cause upscaling of a low-pixel panel.
+    # --- sharpness / anti-upscale (video frame the panels will be shown in) ---
+    # A panel is cropped at the full strip width, so its native width == strip width. To be shown
+    # filling the video frame WITHOUT upscaling blur it must be at least this many native pixels
+    # wide/tall. Panels below the width threshold are NOT stretched -- they are flagged
+    # WOULD-UPSCALE and the manifest tells assembly to place them at native size, centered.
+    "min_segment_pixels_width": 1080,   # video frame width (vertical HD); native width below this would upscale
+    "min_segment_pixels_height": 1920,  # video frame height; a panel shorter than this is shown smaller/centered (still sharp), not blown up
     # --- gap mode (guttered series only) ---
     "gap_row_std_max": 8.0,      # a row counts as background/gutter below this per-row std
     "gap_min_px": 24,            # a background run this tall or taller is a real gutter
@@ -88,6 +97,51 @@ def strip_path_for(creator_id, series_id, chapter_id):
 
 def panels_dir_for(creator_id, series_id, chapter_id):
     return CHAPTERS_DIR / creator_id / series_id / chapter_id / "panels"
+
+
+def manifest_path_for(creator_id, series_id, chapter_id):
+    return panels_dir_for(creator_id, series_id, chapter_id) / "manifest.json"
+
+
+def classify_sharpness(panels, strip_w, cfg):
+    """Decide, per panel, whether it can fill the video frame WITHOUT upscaling blur.
+
+    Every panel is cropped at the full strip width, so native_width == strip_w for all of
+    them -- width is therefore the axis shared by the whole chapter and, at a low capture
+    resolution, the one that forces upscaling everywhere.
+
+    Presentation model (contain-fit, preserving aspect, never enlarging):
+      fit_scale = min(frame_w/nw, frame_h/nh)   # scale to make the panel exactly fill the frame
+      - fit_scale <= 1: native is >= the frame on the binding axis; we DOWNSCALE to fit -> SHARP.
+      - fit_scale >  1: native is smaller than the frame, so filling it means ENLARGING past
+        native -> blur. We do NOT. The panel is flagged WOULD-UPSCALE; assembly shows it at
+        native size, CENTERED (display_scale capped at 1.0): sharp, but smaller than the frame.
+
+    A short close-up (few native rows) is fine by this rule -- it just shows smaller and
+    centered rather than being stretched. Returns a list of per-panel dicts.
+    """
+    frame_w = int(cfg["min_segment_pixels_width"])
+    frame_h = int(cfg["min_segment_pixels_height"])
+    out = []
+    for n, (y0, y1, seam_flag, cost) in enumerate(panels, start=1):
+        nw, nh = strip_w, y1 - y0
+        fit_scale = min(frame_w / nw, frame_h / nh)
+        would_upscale = fit_scale > 1.0  # filling the frame would enlarge past native pixels
+        display_scale = min(1.0, fit_scale)  # cap: never enlarge past native
+        out.append({
+            "index": n,
+            "file": f"panel_{n:03d}.png",
+            "y0": int(y0), "y1": int(y1),
+            "native_width": int(nw), "native_height": int(nh),
+            "would_upscale": bool(would_upscale),
+            "display_mode": "native_centered" if would_upscale else "fill_frame",
+            "display_scale": round(float(display_scale), 4),
+            "display_width": int(round(nw * display_scale)),
+            "display_height": int(round(nh * display_scale)),
+            "high_detail_seam": bool(seam_flag),
+            "cut_cost": round(float(cost), 1),
+        })
+    return out
 
 
 def file_hash(path):
@@ -136,6 +190,7 @@ def plan_segment_cuts(H, W, cfg, row_cost):
     seg_h = max(1, int(round(W * cfg["target_aspect_h"] / cfg["target_aspect_w"])))
     overlap_px = int(round(seg_h * cfg["overlap_pct"]))
     win = int(round(seg_h * cfg["search_window_pct"]))
+    max_h = int(round(seg_h * cfg["max_segment_height_mult"]))  # hard ceiling on panel height (anti-pan)
     # Flag relative to the strip's MEDIAN row-cost: a cut lands on a local minimum, so a
     # high-quantile reference would never trip. If even the calmest row in range is well
     # above typical art (median), the cut is slicing a face/bubble -- flag it.
@@ -149,7 +204,7 @@ def plan_segment_cuts(H, W, cfg, row_cost):
             panels.append((start, H, False, 0.0))
             break
         lo = max(start + 1, target - win)
-        hi = min(H - 1, target + win)
+        hi = min(H - 1, target + win, start + max_h)  # never exceed the height ceiling
         cut = lo + int(np.argmin(row_cost[lo:hi + 1]))
         cost = float(row_cost[cut])
         panels.append((start, cut, cost > flag_thr, cost))
@@ -278,6 +333,11 @@ def plan_dry_run(args, cfg):
               f"search +/-{int(round(seg_h * cfg['search_window_pct']))}px")
         print(f"Estimated panels: ~{est}")
         print(f"Estimated disk: ~{est * (w * seg_h * 3) // (1024 * 1024)}MB uncompressed / far less as PNG.")
+        fw = int(cfg["min_segment_pixels_width"])
+        print(f"Video frame target: {fw}x{cfg['min_segment_pixels_height']}. Strip is {w}px wide -> "
+              + (f"panels would need ~{fw/w:.2f}x upscaling to fill frame (WOULD-UPSCALE; shown native/centered)."
+                 if w < fw else "wide enough to fill the frame without horizontal upscaling."))
+        print("Writes panels/ + panels/manifest.json (per-panel native size + display intent).")
     else:
         print(f"Gap mode: cut at blank bands (row std < {cfg['gap_row_std_max']}, "
               f">= {cfg['gap_min_px']}px), min panel {cfg['gap_min_panel_px']}px.")
@@ -333,25 +393,63 @@ def split_chapter(args, cfg):
         print(f"[split] segment mode: {len(panels)} panel(s), target height ~{seg_h}px, "
               f"high-detail flag threshold row-cost {flag_thr:.1f}.")
 
-    # Per-panel table of chosen cut positions.
-    print("\n  panel   y0       y1       height   cut_cost  flag")
-    print("  -----   ------   ------   ------   --------  ----")
-    for n, (y0, y1, flag, cost) in enumerate(panels, start=1):
-        print(f"  {n:5d}   {y0:6d}   {y1:6d}   {y1-y0:6d}   {cost:8.1f}  {'HIGH' if flag else ''}")
+    # Per-panel table: cut position + NATIVE pixel size + SHARP / WOULD-UPSCALE flag.
+    frame_w = int(cfg["min_segment_pixels_width"])
+    frame_h = int(cfg["min_segment_pixels_height"])
+    records = classify_sharpness(panels, W, cfg)
+    print(f"\n[split] video frame target {frame_w}x{frame_h}; a panel is SHARP if it fills that "
+          f"frame without enlarging past its native pixels.")
+    print("\n  panel   y0       y1       native_wxh     sharpness       display        seam")
+    print("  -----   ------   ------   -----------    ------------    -----------    ----")
+    for r in records:
+        sharp = "WOULD-UPSCALE" if r["would_upscale"] else "SHARP"
+        disp = f"{r['display_width']}x{r['display_height']}"
+        print(f"  {r['index']:5d}   {r['y0']:6d}   {r['y1']:6d}   "
+              f"{r['native_width']:5d}x{r['native_height']:<5d}  {sharp:13s}  {disp:12s}  "
+              f"{'HIGH' if r['high_detail_seam'] else ''}")
 
     paths = write_panels(panels, img, out_dir)
 
+    # Manifest: assembly reads this to place each panel at display_scale (<=1.0), centered when
+    # WOULD-UPSCALE -- so a low-pixel panel is NEVER blown up past its native resolution.
+    upscale = [r["index"] for r in records if r["would_upscale"]]
+    manifest = {
+        "unit": unit_name, "input_hash": ihash, "mode": cfg["mode"],
+        "strip_width": int(W), "strip_height": int(H),
+        "frame_target": {"width": frame_w, "height": frame_h},
+        "panel_count": len(records),
+        "would_upscale_count": len(upscale),
+        "panels": records,
+    }
+    mpath = manifest_path_for(args.creator_id, args.series_id, args.chapter_id)
+    atomic_write_json(mpath, manifest)
+
     if flagged:
-        print(f"\n[split] {len(flagged)} panel(s) had to cut through a high-detail region "
+        print(f"\n[split] {len(flagged)} panel(s) cut through a high-detail region "
               f"(no calm row in range): {flagged}")
         print("  These seams may clip a face/bubble; the overlap keeps the subject whole in the neighbour panel.")
     else:
         print("\n[split] all cuts landed on calm rows (no high-detail seams flagged).")
-    print(f"[split] wrote {len(paths)} panel(s) to {out_dir}")
+
+    # Sharpness verdict -- be honest: frequent WOULD-UPSCALE is a CAPTURE-RESOLUTION limit, not a
+    # split bug, and the real fix is re-capturing at a higher device scale (MS-03), not stretching here.
+    frac = len(upscale) / max(1, len(records))
+    print(f"[split] sharpness: {len(records) - len(upscale)}/{len(records)} panels SHARP, "
+          f"{len(upscale)} WOULD-UPSCALE.")
+    if W < frame_w:
+        need = frame_w / W
+        print(f"[split] NOTE: strip is only {W}px wide but the video frame is {frame_w}px wide, so EVERY")
+        print(f"  panel would need ~{need:.2f}x horizontal upscaling to fill the frame -- that blur cannot")
+        print(f"  be fixed at split. The real fix is to RE-CAPTURE at a higher device scale so the strip")
+        print(f"  comes out >= {frame_w}px wide (webtoon_capture.py device_scale_factor is currently 1;")
+        print(f"  raising it to 2 would give a ~{W*2}px strip). Until then, WOULD-UPSCALE panels are shown")
+        print(f"  at native size, centered (sharp but smaller) rather than stretched.")
+    print(f"[split] wrote {len(paths)} panel(s) + manifest.json to {out_dir}")
 
     mark_unit(STATE_PATH, unit_name, "DONE", input_hash=ihash,
               mode=cfg["mode"], panel_count=len(paths),
-              flagged_panels=flagged, panels_dir=str(out_dir))
+              flagged_panels=flagged, would_upscale=upscale,
+              strip_width=int(W), panels_dir=str(out_dir), manifest=str(mpath))
 
 
 def main():

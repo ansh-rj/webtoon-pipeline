@@ -3,28 +3,31 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-04 — panel_splitter.py (strip.png -> ordered panel crops). NEW stage between stitch and
-extraction. My chapters are CONTINUOUS vertical art (no blank gutters), so gap-splitting can't
-find cuts. Built segment mode as primary + gap mode kept for future guttered series (config
-`panel_split.mode`, default "segment").
-- segment mode: slice to a target aspect (default 9:16 tall), ~5% overlap so nothing is lost at a
-  seam, and place each cut on the LEAST-BUSY row (min mean-gradient / row-cost) within a search
-  window of the ideal boundary -> avoids slicing a face/bubble without needing a blank row.
-- Pure-CV stage like capture: NO tier/engine field. Config block `panel_split` (auto-added,
-  idempotent). Atomic panel writes, hash-skip on unchanged strip, --dry-run + preflight
-  (doctor.CHECK_FUNCS), heartbeat, global exception handler -- all per house style.
-- VISUAL VERIFICATION drove two fixes on the test chapter (this is the important part):
-  first run's window (15%) + flag reference (75th pct) were BOTH wrong -- sampled cuts showed one
-  slicing through a character's EYES (panel 8) and one through a head/hair (panel 26), NEITHER
-  flagged. Row-cost analysis proved calm (cost 0.0, solid-colour) rows existed nearby but outside
-  the 15% window (p08 needed ~40%). Fixes: search_window_pct 0.15->0.40; flag vs MEDIAN row-cost
-  (high_detail_mult 0.33) not a high quantile, since a chosen cut is always a local minimum.
-  Re-ran: 67 panels, 0 flagged, both former bad cuts now land on solid-black rows BELOW the
-  subject (face/head kept whole -- re-inspected the exact rows). 5 sample crops eyeballed clean.
-- Files: panel_splitter.py (new); pipeline_config.json (+ panel_split block, tuned values).
+MS-04b — panel_splitter.py sharpness/anti-upscale refinement. Concern was UPSCALING blur, not
+height. Each panel is cropped at FULL strip width, so native_width == strip_width for the whole
+chapter -- width is the binding, blur-causing axis.
+- Config: min_segment_pixels_width/height (video frame the panel must fill without enlarging);
+  max_segment_height_mult (height ceiling to avoid absurd pans -- only ever SHORTENS a crop, so
+  it can never cause upscaling).
+- classify_sharpness(): contain-fit fit_scale = min(fw/nw, fh/nh). fit<=1 -> SHARP (downscale to
+  fit); fit>1 -> WOULD-UPSCALE (filling frame would enlarge past native). NEVER stretched:
+  display_scale capped at 1.0, WOULD-UPSCALE panels marked display_mode "native_centered".
+  (Caught + fixed an inverted boolean mid-session: report said "67/67 SHARP" while the NOTE said
+  every panel needs 1.54x upscaling -- fit_scale>1 is the upscale case, not <1.)
+- Writes panels/manifest.json: per-panel native w/h, would_upscale, display_mode/scale/w/h, so
+  ASSEMBLY places low-pixel panels at native size centered, not blown up. Verified invariant:
+  no panel's display dims exceed native.
+- Report prints per-panel native WxH + SHARP/WOULD-UPSCALE + display size.
+- HONEST capture-ceiling note (not papered over): strip is 700px (ch01) / 800px (ch02) wide,
+  captured at device_scale_factor=1. Video frame is 1080px wide -> EVERY panel needs ~1.54x
+  horizontal upscaling; that blur CANNOT be fixed at split. Real fix = re-capture at higher
+  device scale in MS-03 (dsf=2 -> ~1400px strip -> panels become SHARP). The stage says this
+  plainly and shows low-res panels native/centered meanwhile.
+- Files: panel_splitter.py (classify_sharpness, manifest, report, height ceiling, dry-run frame
+  line); pipeline_config.json (+ max_segment_height_mult, min_segment_pixels_width/height).
 
 ## Last completed
-MS-04 (panel_splitter.py) — pending commit. Prior: MS-01j (committed 1177255).
+MS-04b (sharpness/anti-upscale) — pending commit. Prior: MS-04 (panel_splitter.py, committed 4aa5fa7).
 
 ## State
 DONE — ch01 strip 700x57096, ch02 strip 700x77406; both end exactly at the comic (title card /
@@ -333,7 +336,7 @@ Verified this session:
   browser automation), but extraction.py (MS-03, next session) will need it
 
 ## Exact next step
-MS-04 (panel_splitter.py) is complete and (about to be) committed. NEXT is MS-03: build
+MS-04 + MS-04b (panel_splitter.py, incl. sharpness/anti-upscale) complete. NEXT is MS-03: build
 extraction.py -- now operates on the PANEL CROPS from panel_splitter
 (chapters/{ids}/panels/panel_###.png), not the whole strip. Read tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
 tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
@@ -342,6 +345,12 @@ that's what's verified installed; stub the paid path (claude_vision / gemini_vis
 same interface so paid tier is wireable once a key is present in .env. extraction.py should call
 doctor.py's checks (or import run_checks from doctor.py) as its own preflight gate rather than
 reimplementing dependency checks.
+CAPTURE-RESOLUTION FIX (raise this in MS-03): strips are only 700-800px wide (device_scale_factor=1
+in webtoon_capture.py:229), so panel_splitter flags EVERY panel WOULD-UPSCALE for a 1080px frame
+(~1.54x). To make panels frame-filling AND sharp, re-capture with device_scale_factor=2 (~1400px
+strip). This is a capture change, not an extraction one, but it's the highest-leverage quality fix
+outstanding -- decide with the user whether to fold it in before/with extraction. OCR itself also
+benefits from the higher-res capture.
 (Numbering note: "MS-02" only ever existed as a forward-reference in commit ff0f043; the setup and
 capture/stitch work all shipped under MS-01a..MS-01j. Extraction is MS-03.)
 
