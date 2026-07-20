@@ -58,6 +58,13 @@ DEFAULT_CAPTURE_CONFIG = {
     "stitch_chrome_window_px": 400,     # sliding window for chrome-density smoothing
     "stitch_chrome_density_max": 0.10,  # comic = rows whose windowed chrome density stays below this
     "stitch_page_bg_min": 200,          # trailing/leading rows brighter than this are page-bg (share/promo bars) -> trimmed
+    # The chapter nav bar ("< #5 >") sits centred on a PLAIN dark band: its margins are
+    # uniform, so the texture test above reads it as comic, and it is too dark for the
+    # page-bg trim. It is a fixed-height element, so it is cut by configured size,
+    # per-series tunable. Applied to the assembled strip BEFORE the auto chrome trim.
+    "stitch_crop_top_px": 50,           # fixed chrome off the strip top (this series' nav bar is rows 0..49)
+    "stitch_crop_bottom_px": 0,         # same for the strip bottom
+    "stitch_chrome_repeat_min_ncc": 0.90,  # flag (never delete) mid-strip repeats of the cropped top band
 }
 
 CURRENT_UNIT = {"name": None}
@@ -584,22 +591,74 @@ def stitch_segments(args, cap_cfg):
 
     strip = np.vstack(parts)
 
-    # Trim page chrome (top nav, footer promos, comments -- whatever size they are this
-    # chapter) by reading the side margins: comic rows keep them uniform, chrome doesn't.
+    # --- chrome removal: ONE combined slice, applied before writing strip.png ---
+    # (a) fixed crop: the chapter nav bar ("< #N >") sits on a plain band, so the
+    #     margin-texture test below cannot see it; it is a fixed-height element cut
+    #     by configured pixel count (per-series tunable).
+    # (b) auto trim: margin-texture + density detection of nav/footer/promos/comments.
+    # Final keep range = intersection of both.
+    H_full = strip.shape[0]
+    crop_top = max(0, int(cap_cfg.get("stitch_crop_top_px", 0) or 0))
+    crop_bottom = max(0, int(cap_cfg.get("stitch_crop_bottom_px", 0) or 0))
+    if crop_top + crop_bottom >= H_full:
+        raise RuntimeError(
+            f"stitch_crop_top_px ({crop_top}) + stitch_crop_bottom_px ({crop_bottom}) >= "
+            f"strip height ({H_full}) — check the capture config; nothing would be left.")
+
+    strip_gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    keep0, keep1 = crop_top, H_full - crop_bottom
+    auto = None
     if cap_cfg.get("stitch_trim_chrome", True):
         advances = [s["advance"] for s in seams]
-        strip_gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        kept = detect_chrome_rows(grays, advances, cx0, cx1, cap_cfg, strip_gray)
-        if kept is None:
-            print("[stitch] chrome trim: no readable side margins / untrustworthy split -- keeping full strip.")
+        auto = detect_chrome_rows(grays, advances, cx0, cx1, cap_cfg, strip_gray)
+        if auto is None:
+            print("[stitch] chrome trim (auto): no readable side margins / untrustworthy split -- skipped.")
         else:
-            y0, y1 = kept
-            print(f"[stitch] chrome trim: comic spans strip rows {y0}..{y1}; "
-                  f"trimming {y0}px of header chrome and {strip.shape[0] - y1}px of "
-                  f"footer chrome (promos/comments/recommendations).")
-            if y0:
-                print(f"[stitch] note: seam strip_y values in the table above shift down by {y0}px after this trim.")
-            strip = strip[y0:y1]
+            keep0, keep1 = max(keep0, auto[0]), min(keep1, auto[1])
+    if keep1 <= keep0:
+        raise RuntimeError(
+            f"Chrome trim would remove the whole strip (keep range {keep0}..{keep1} of {H_full}) — "
+            f"fixed crop and auto trim disagree; check stitch_crop_top_px/bottom_px.")
+
+    if keep0 or keep1 < H_full:
+        a0, a1 = (auto or (0, H_full))
+        print(f"[stitch] chrome trim: keeping strip rows {keep0}..{keep1} of {H_full}.")
+        print(f"  top:    {keep0}px removed "
+              f"(fixed nav-bar crop {crop_top}px, auto margin-texture {a0}px — larger wins)")
+        print(f"  bottom: {H_full - keep1}px removed "
+              f"(auto footer/comments {H_full - a1}px, fixed crop {crop_bottom}px — larger wins)")
+        print("  Inspect the top edge of strip.png to confirm no art was lost; tune "
+              "stitch_crop_top_px per series if the nav bar height differs.")
+        if keep0:
+            print(f"[stitch] note: seam strip_y values in the table above shift down by {keep0}px after this trim.")
+
+    # (c) sticky-header check: if the cropped top band repeats mid-strip, the header
+    #     scrolled with the page and was captured many times — a top crop can't fix
+    #     that, and auto-deleting mid-strip rows on a template match could destroy
+    #     art. Report loudly, change nothing.
+    if crop_top:
+        band = strip_gray[:crop_top]
+        body = strip_gray[keep0:keep1]
+        if float(band.std()) >= 3 and body.shape[0] >= crop_top * 2:
+            res = cv2.matchTemplate(body, band, cv2.TM_CCOEFF_NORMED)[:, 0]
+            min_ncc = float(cap_cfg.get("stitch_chrome_repeat_min_ncc", 0.90))
+            hits, last = [], -crop_top
+            for y in np.where(res >= min_ncc)[0]:
+                if y - last >= crop_top:
+                    hits.append((int(y), float(res[y])))
+                    last = y
+            if hits:
+                print(f"\n[stitch] WARNING: the nav-bar band repeats {len(hits)} time(s) INSIDE the strip:")
+                for y, ncc in hits:
+                    print(f"  at strip row y={y} (match {ncc:.3f})")
+                print("  The header is STICKY and was captured repeatedly — a one-time top crop cannot")
+                print("  fix this, and these bands were NOT removed (deleting mid-strip rows is unsafe).")
+                print("  Fix the capture (hide the sticky header before screenshotting) and re-capture;")
+                print("  tell me if you want webtoon_capture.py to hide it via CSS automatically.\n")
+            else:
+                print(f"[stitch] sticky-header check: nav-bar band does not repeat inside the strip (good).")
+
+    strip = strip[keep0:keep1]
 
     out_path = strip_path_for(args.creator_id, args.series_id, args.chapter_id)
 
@@ -674,6 +733,8 @@ def main():
                   f"(trim only when overlap matches >= {cap_cfg['stitch_overlap_min_ncc']}, else concatenate).")
             print(f"Crop output to content column: {cap_cfg['stitch_crop_to_content']}")
             print(f"Trim page chrome (nav/footer/comments, any size): {cap_cfg.get('stitch_trim_chrome', True)}")
+            print(f"Fixed chrome crop: {cap_cfg.get('stitch_crop_top_px', 0)}px top, "
+                  f"{cap_cfg.get('stitch_crop_bottom_px', 0)}px bottom (nav bar; per-series tunable)")
             print("No changes made. Re-run without --dry-run to stitch.")
             return
         preflight(["python_version", "venv", "dependencies", "folders", "disk_space"])

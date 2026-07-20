@@ -107,7 +107,10 @@
     "stitch_chrome_margin_std": 10,
     "stitch_chrome_window_px": 400,
     "stitch_chrome_density_max": 0.1,
-    "stitch_page_bg_min": 200
+    "stitch_page_bg_min": 200,
+    "stitch_crop_top_px": 50,
+    "stitch_crop_bottom_px": 0,
+    "stitch_chrome_repeat_min_ncc": 0.9
   },
   "panel_split": {
     "mode": "segment",
