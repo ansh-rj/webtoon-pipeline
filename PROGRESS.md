@@ -3,37 +3,73 @@
 Permanent handoff doc between build sessions. Read this first, resume at "Exact next step."
 
 ## Current micro-session
-MS-04b — panel_splitter.py sharpness/anti-upscale refinement. Concern was UPSCALING blur, not
-height. Each panel is cropped at FULL strip width, so native_width == strip_width for the whole
-chapter -- width is the binding, blur-causing axis.
-- Config: min_segment_pixels_width/height (video frame the panel must fill without enlarging);
-  max_segment_height_mult (height ceiling to avoid absurd pans -- only ever SHORTENS a crop, so
-  it can never cause upscaling).
-- classify_sharpness(): contain-fit fit_scale = min(fw/nw, fh/nh). fit<=1 -> SHARP (downscale to
-  fit); fit>1 -> WOULD-UPSCALE (filling frame would enlarge past native). NEVER stretched:
-  display_scale capped at 1.0, WOULD-UPSCALE panels marked display_mode "native_centered".
-  (Caught + fixed an inverted boolean mid-session: report said "67/67 SHARP" while the NOTE said
-  every panel needs 1.54x upscaling -- fit_scale>1 is the upscale case, not <1.)
-- Writes panels/manifest.json: per-panel native w/h, would_upscale, display_mode/scale/w/h, so
-  ASSEMBLY places low-pixel panels at native size centered, not blown up. Verified invariant:
-  no panel's display dims exceed native.
-- Report prints per-panel native WxH + SHARP/WOULD-UPSCALE + display size.
-- HONEST capture-ceiling note (not papered over): strip is 700px (ch01) / 800px (ch02) wide,
-  captured at device_scale_factor=1. Video frame is 1080px wide -> EVERY panel needs ~1.54x
-  horizontal upscaling; that blur CANNOT be fixed at split. Real fix = re-capture at higher
-  device scale in MS-03 (dsf=2 -> ~1400px strip -> panels become SHARP). The stage says this
-  plainly and shows low-res panels native/centered meanwhile.
-- Files: panel_splitter.py (classify_sharpness, manifest, report, height ceiling, dry-run frame
-  line); pipeline_config.json (+ max_segment_height_mult, min_segment_pixels_width/height).
+MS-04d — panel_splitter.py: SNAP-TO-GUTTER cut selection + tall-panel PAN display mode. Builds on
+the MS-04c landscape 1920x1080 height-fit model (kept; details below). Two changes this session,
+both driven by inspecting real cuts on ch02 (user reported "many panels cut unfairly from the
+middle"):
+- CUT SELECTION rewritten (plan_segment_cuts -> pick_snap): within the FULL legal range
+  [start+min_h, start+max_h], SNAP the cut to the midpoint of the best blank band (rows with per-row
+  std < gap_row_std_max -- a gutter / empty background). Bands are scored by height minus a distance
+  penalty (0.15 px^-1 from the ideal target boundary), so a clean gutter near the target beats a
+  slightly wider one far away, but a splash page's only gutter far down can still win (capturing the
+  page WHOLE). Falls back to least-busy row (argmin row_cost) within +/-win ONLY when no blank band
+  exists in the whole range. WHY: the old least-busy-row-in-window approach cut mid-art on continuous
+  scenes with no calm row; argmin also lands at a band EDGE (still busy on one side) while the band
+  MIDDLE is a guaranteed-clean cut. Result: ch02 mid-art cuts 45 -> ~2 (both remaining are benign
+  false-alarm flags on textured backgrounds, no sliced subjects); ch01 high-detail seams 9 -> 0 (the
+  old panel 9/10 inset-face split is gone -- the cut now lands on the surrounding gutter).
+- SIDE EFFECT + FIX: snapping to far gutters makes some panels TALL (splash pages captured whole; up
+  to 2544px). Height-fitting a 2544px panel to 1080 tall = a 340px-wide sliver in the 1920 frame. So
+  classify_sharpness now has THREE display modes (was two):
+    height_fit_pillarbox -- normal portrait panel, height-fit to 1080, blurred-dim side fill.
+    height_fit_pan       -- panel so tall its height-fit width would be < pan_min_display_width_px
+                            (450); shown at NATIVE width (scale 1.0), assembly scrolls a 1080px window
+                            top->bottom. Manifest carries pan_travel_px = native_h - 1080.
+    native_centered      -- panel too SHORT to reach 1080 within tolerance; native size, centered.
+  Decision was the user's ("whatever is best" -> hybrid: pillarbox normal panels, pan only the true
+  slivers). Results: ch01 45 panels = 29 pillarbox / 16 pan / 0 native; ch02 78 panels = 54 / 24 / 0.
+  Both 100% SHARP (no enlargement past 1.15x).
+- INVARIANT now enforced at runtime: split_chapter raises if any display_scale > upscale_tolerance
+  (pan & native panels are pinned to 1.0x; pillarbox <= 1.15x by construction).
+- CONFIG DRIFT NOTE: search_window_pct and max_segment_height_mult on disk are 0.6 / 2.6 (not the
+  0.30 / 1.6 from MS-04c) -- changed during an earlier error/continue churn, KEPT because the wide
+  window + tall ceiling are what let pick_snap reach far gutters and capture splash pages whole.
+  target_height 1000, min_segment_height 940, snap_blank_min_px 12, pan_min_display_width_px 450.
+- manifest.json additions: per-panel pan_travel_px; top-level display_mode_counts and
+  pan_min_display_width_px. Everything else per MS-04c below.
+
+## MS-04c model (still in force)
+- OUTPUT: portrait webtoon panels HEIGHT-FIT into a 1920x1080 LANDSCAPE frame (top & bottom touch),
+  centered horizontally, blurred-dim side fill added LATER at assembly. This stage decides cuts +
+  records display intent only; it does NOT build the fill or the video.
+- SOURCE ART: continuous gutterless webtoon, ~800x1000px native (true file res per site DevTools;
+  a FIXED ceiling -- NOT re-capturing, NOT raising device scale). ch01 strip is 700px wide (side
+  margins cropped at stitch), ch02 is 800px wide. Height-fit binds on HEIGHT, so strip width does
+  not drive sharpness.
+- SHARPNESS = height-fit contain on HEIGHT: fit_scale = 1080/native_h. <=1 downscale (SHARP);
+  1<fit<=1.15 sub-tolerance enlargement (SHARP, imperceptible); >1.15 WOULD-UPSCALE (native_centered).
+- MIN-HEIGHT FLOOR: min_segment_height 940 (=1080/1.15) enforced INSIDE the cut search so no panel
+  is too short to height-fit within tolerance. GUTTERLESS -> segment mode (default); gap mode kept.
+- NAV-BAR TRIM: crop_top_px (default 0) trims the strip top pre-split; detect_chrome_bands reports
+  near-uniform edge bands (report-only).
+- CLI: --target-height, --crop-top-px, --overlap-pct, --search-window-pct, --mode.
+- Files: panel_splitter.py (config, classify_sharpness 3-mode, plan_segment_cuts/pick_snap,
+  detect_chrome_bands, split_chapter report/manifest/invariant, dry-run, CLI); pipeline_config.json.
 
 ## Last completed
-MS-04b (sharpness/anti-upscale) — pending commit. Prior: MS-04 (panel_splitter.py, committed 4aa5fa7).
+MS-04d (snap-to-gutter cuts + tall-panel PAN mode) — committed. Prior: MS-04c/b/MS-04
+(panel_splitter.py), MS-01k (committed 86b99d9).
 
 ## State
-DONE — ch01 strip 700x57096, ch02 strip 700x77406; both end exactly at the comic (title card /
-"TO BE CONTINUED"), no comments/promos/share bar. 67/67 and 87/87 seams verified. ch01's raw
-segments have been cleaned up (strip.png kept); ch02 segments still on disk. Working tree clean
-except untracked scratch_pad/ (scratch, not committed).
+DONE — both chapters re-split under the landscape + snap + pan config:
+- ch01: strip 700x66018 -> 45 panels, 45/45 SHARP, 0 high-detail seams. min 973 / median 1396 /
+  max 2415px native. Display: 29 pillarbox / 16 pan / 0 native.
+- ch02: strip 800x121568 -> 78 panels, 78/78 SHARP, 1 benign flag (textured bg, no sliced subject).
+  min 983 / median 1497 / max 2544px native. Display: 54 pillarbox / 24 pan / 0 native. Mid-art cuts
+  45 -> 2 vs the pre-snap run (user's "cut from the middle" complaint resolved; verified panels 71 &
+  76 -- clean gutter cuts, splash page captured whole).
+Working tree: panel_splitter.py + pipeline_config.json reconfigured, both manifests regenerated,
+uncommitted.
 
 ## MS-01i summary (this session)
 User captured a SECOND chapter (02, 88 segments) and reported comments still present in its strip.
@@ -336,23 +372,23 @@ Verified this session:
   browser automation), but extraction.py (MS-03, next session) will need it
 
 ## Exact next step
-MS-04 + MS-04b (panel_splitter.py, incl. sharpness/anti-upscale) complete. NEXT is MS-03: build
-extraction.py -- now operates on the PANEL CROPS from panel_splitter
-(chapters/{ids}/panels/panel_###.png), not the whole strip. Read tier/engine from pipeline_config.json's `extraction` block (tier "auto" → resolve via
-tier_defaults[global tier]), resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine,
-implement the free path (easyocr, tesseract fallback) fully working with zero API keys since
-that's what's verified installed; stub the paid path (claude_vision / gemini_vision) behind the
-same interface so paid tier is wireable once a key is present in .env. extraction.py should call
-doctor.py's checks (or import run_checks from doctor.py) as its own preflight gate rather than
-reimplementing dependency checks.
-CAPTURE-RESOLUTION FIX (raise this in MS-03): strips are only 700-800px wide (device_scale_factor=1
-in webtoon_capture.py:229), so panel_splitter flags EVERY panel WOULD-UPSCALE for a 1080px frame
-(~1.54x). To make panels frame-filling AND sharp, re-capture with device_scale_factor=2 (~1400px
-strip). This is a capture change, not an extraction one, but it's the highest-leverage quality fix
-outstanding -- decide with the user whether to fold it in before/with extraction. OCR itself also
-benefits from the higher-res capture.
+MS-04 / MS-04b / MS-04c (panel_splitter.py, now landscape 1920x1080 height-fit) complete. NEXT is
+MS-03: build extraction.py -- operates on the PANEL CROPS from panel_splitter
+(chapters/{ids}/panels/panel_###.png), not the whole strip. Read tier/engine from
+pipeline_config.json's `extraction` block (tier "auto" → resolve via tier_defaults[global tier]),
+resolve engine "auto" → tier_defaults[resolved_tier].extraction_engine, implement the free path
+(easyocr, tesseract fallback) fully working with zero API keys since that's what's verified
+installed; stub the paid path (claude_vision / gemini_vision) behind the same interface so paid
+tier is wireable once a key is present in .env. extraction.py should call doctor.py's checks (or
+import run_checks from doctor.py) as its own preflight gate rather than reimplementing dependency
+checks.
+CAPTURE-RESOLUTION NOTE (now DOWNGRADED, was highest-leverage in MS-04b): under the LANDSCAPE
+height-fit model the ~800x1000 source art is SHARP without any re-capture (1080/1000 = 1.08x, within
+the 1.15x tolerance) -- ch01 came out 63/63 SHARP. So device_scale_factor=2 is NO LONGER required
+for panels to be frame-filling+sharp. It would still modestly help OCR legibility of small text; keep
+it as an OPTIONAL quality lever for extraction, not a blocker.
 (Numbering note: "MS-02" only ever existed as a forward-reference in commit ff0f043; the setup and
-capture/stitch work all shipped under MS-01a..MS-01j. Extraction is MS-03.)
+capture/stitch work all shipped under MS-01a..MS-01k. Extraction is MS-03.)
 
 ## Blockers
 (none — ffmpeg is now installed and doctor.py confirms a clean pass end to end)
